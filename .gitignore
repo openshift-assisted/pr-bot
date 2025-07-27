@@ -1,0 +1,109 @@
+# Binaries and executables
+pr-bot
+main
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Environment files (contain secrets)
+.env
+.env.*
+*.env
+!env.example
+
+# Configuration files (may contain secrets)
+config.yaml
+config.yml
+!config.yaml.example
+!config.yml.example
+
+# Test output and logs
+test_output.txt
+*.log
+logs/
+*.out
+
+# Data files (may contain sensitive information)
+data/
+*.xlsx
+*.xls
+*.csv
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Go specific
+# If you prefer the coverage files to be in the root directory, comment out the next line
+*.cover
+*.coverprofile
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Security and authentication files
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*_rsa
+*_dsa
+*_ecdsa
+*_ed25519
+*.token
+secrets/
+private/
+
+# Build artifacts
+bin/
+dist/
+build/
+*.tar.gz
+*.zip
+
+# Documentation builds
+docs/_build/
+
+# Runtime and process files
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Dependency lock files (optional - some teams prefer to track these)
+# Uncomment if you don't want to track go.sum
+# go.sum 

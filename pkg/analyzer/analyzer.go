@@ -1,0 +1,916 @@
+// Package analyzer provides core business logic for analyzing merged pull requests and their presence across release branches.
+package analyzer
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"strconv"
+	"sync"
+
+	"github.com/sbratsla/pr-bot/internal/ga"
+	"github.com/sbratsla/pr-bot/internal/github"
+	"github.com/sbratsla/pr-bot/internal/gitlab"
+	"github.com/sbratsla/pr-bot/internal/jira"
+	"github.com/sbratsla/pr-bot/internal/logger"
+	"github.com/sbratsla/pr-bot/internal/models"
+	"github.com/sbratsla/pr-bot/internal/slack"
+)
+
+// Constants for the analyzer package.
+const (
+	// Excel file path for GA tracking
+	ExcelFilePath = "data/ACM - Z Stream Release Schedule.xlsx"
+
+	// Status check strings - these match the constants in ga package
+	StatusNotFound = "Not Found"
+)
+
+// Analyzer handles PR analysis operations.
+type Analyzer struct {
+	githubClient *github.Client
+	config       *models.Config
+	gaParser     *ga.Parser
+	slackClient  *slack.Client
+	gitlabClient *gitlab.Client
+	jiraClient   *jira.Client
+
+	// Cache for branch information to avoid repeated API calls
+	branchCache    []github.BranchInfo
+	branchCacheMux sync.RWMutex
+}
+
+// New creates a new analyzer instance.
+func New(ctx context.Context, config *models.Config) *Analyzer {
+	githubClient := github.NewClient(ctx, config.GitHubToken)
+	gaParser := ga.NewParser(ExcelFilePath)
+	slackClient := slack.New(config.SlackXOXD, config.SlackXOXC)
+
+	var gitlabClient *gitlab.Client
+	if config.GitLabToken != "" {
+		gitlabClient = gitlab.NewClient(ctx, config.GitLabToken)
+	}
+
+	var jiraClient *jira.Client
+	if config.JiraToken != "" {
+		jiraClient = jira.NewClient(ctx, config.JiraToken)
+	}
+
+	return &Analyzer{
+		githubClient: githubClient,
+		config:       config,
+		gaParser:     gaParser,
+		slackClient:  slackClient,
+		gitlabClient: gitlabClient,
+		jiraClient:   jiraClient,
+	}
+}
+
+// AnalyzePR performs complete analysis of a pull request.
+func (a *Analyzer) AnalyzePR(prNumber int) (*models.PRAnalysisResult, error) {
+	return a.AnalyzePRWithOptions(prNumber, false)
+}
+
+// AnalyzePRWithOptions performs complete analysis of a pull request with optional settings.
+func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*models.PRAnalysisResult, error) {
+	logger.Debug("Starting analysis of PR #%d (skipJiraAnalysis: %v)", prNumber, skipJiraAnalysis)
+
+	// Get PR information
+	prInfo, err := a.githubClient.GetPRInfo(a.config.Owner, a.config.Repository, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PR info: %w", err)
+	}
+
+	logger.Debug("PR #%d: %s (merged at %v)", prInfo.Number, prInfo.Title, prInfo.MergedAt)
+	logger.Debug("Commit hash: %s", prInfo.Hash)
+
+	// Get all release branches with different patterns (using cache)
+	branchInfos, err := a.getBranches()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get release branches: %w", err)
+	}
+
+	logger.Debug("Found %d release branches across all patterns", len(branchInfos))
+
+	// Group branches by pattern for logging
+	patternCounts := make(map[string]int)
+	for _, branchInfo := range branchInfos {
+		patternCounts[branchInfo.Pattern]++
+	}
+
+	for pattern, count := range patternCounts {
+		logger.Debug("  %s: %d branches", pattern, count)
+	}
+
+	// Check PR presence in each release branch using goroutines for parallel processing
+	branchPresences := make([]models.BranchPresence, len(branchInfos))
+
+	// Use a channel to control concurrency (limit to avoid overwhelming GitHub API)
+	concurrencyLimit := 10
+	semaphore := make(chan struct{}, concurrencyLimit)
+
+	// WaitGroup to wait for all goroutines
+	var wg sync.WaitGroup
+
+	for i, branchInfo := range branchInfos {
+		wg.Add(1)
+		go func(index int, branch github.BranchInfo) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			logger.Debug("Checking branch: %s (%s)", branch.Name, branch.Pattern)
+
+			found, mergedAt, err := a.githubClient.CheckCommitInBranch(
+				a.config.Owner,
+				a.config.Repository,
+				prInfo.Hash,
+				branch.Name,
+			)
+
+			if err != nil {
+				logger.Debug("Warning: failed to check commit in branch %s: %v", branch.Name, err)
+				// Continue with other branches even if one fails
+			}
+
+			gaStatus := models.GAStatus{}
+			var upcomingGAs []models.UpcomingGA
+			var releasedVersions []string
+
+			// Always calculate GA status for ACM/MCE branches to provide context
+			if branch.Pattern == "release-ocm-" {
+				var gaErr error
+				gaStatus, gaErr = a.gaParser.GetGAStatus(branch.Name, mergedAt)
+				if gaErr != nil {
+					logger.Debug("Warning: failed to get GA status for %s: %v", branch.Name, gaErr)
+				}
+
+				// Get upcoming GA versions
+				upcomingGAs, gaErr = a.gaParser.GetUpcomingGAVersions(branch.Name, mergedAt)
+				if gaErr != nil {
+					logger.Debug("Warning: failed to get upcoming GA versions for %s: %v", branch.Name, gaErr)
+				}
+			}
+
+			if found {
+				// For Version-prefixed branches (v*), find the exact release versions
+				if branch.Pattern == "v" {
+					logger.Debug("Finding exact release versions for %s (v%s)", branch.Name, branch.Version)
+					foundTags, tagErr := a.githubClient.FindCommitInVersionTags(
+						a.config.Owner,
+						a.config.Repository,
+						prInfo.Hash,
+						branch.Name, // e.g., "v2.40" for branch v2.40
+					)
+					if tagErr != nil {
+						logger.Debug("Warning: failed to find release versions for %s: %v", branch.Name, tagErr)
+					} else {
+						releasedVersions = foundTags
+						if len(foundTags) > 0 {
+							logger.Debug("Found in release versions: %v", foundTags)
+						} else {
+							logger.Debug("Not found in any release versions for %s", branch.Name)
+						}
+					}
+				}
+
+				// Perform MCE snapshot validation if GitLab client is available and not all GAs are in future
+				// Only validate if the PR is actually in this branch
+				if a.gitlabClient != nil && len(upcomingGAs) > 0 && branch.Pattern == "release-ocm-" {
+					// Check if all GA dates are in the future
+					allGAsInFuture := true
+					now := time.Now()
+					for _, upcomingGA := range upcomingGAs {
+						if upcomingGA.GADate != nil && upcomingGA.GADate.Before(now) {
+							allGAsInFuture = false
+							break
+						}
+					}
+
+					// Only perform validation if not all GAs are in the future
+					if !allGAsInFuture {
+						upcomingGAs = a.performMCEValidation(upcomingGAs, prInfo.Hash)
+					}
+				}
+			}
+
+			presence := models.BranchPresence{
+				BranchName:       branch.Name,
+				Pattern:          branch.Pattern,
+				Version:          branch.Version,
+				MergedAt:         mergedAt,
+				Found:            found,
+				ReleasedVersions: releasedVersions,
+				GAStatus:         gaStatus,
+				UpcomingGAs:      upcomingGAs,
+			}
+
+			branchPresences[index] = presence
+
+			if found {
+				logger.Debug("✓ Found in %s (%s, version %s)", branch.Name, branch.Pattern, branch.Version)
+				if mergedAt != nil {
+					logger.Debug("  Merged at: %v", mergedAt)
+				}
+			} else {
+				logger.Debug("✗ Not found in %s (%s, version %s)", branch.Name, branch.Pattern, branch.Version)
+			}
+		}(i, branchInfo)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	result := &models.PRAnalysisResult{
+		PR:              *prInfo,
+		ReleaseBranches: branchPresences,
+		AnalyzedAt:      time.Now(),
+	}
+
+	// Perform JIRA analysis if JIRA client is available and PR title contains MGMT ticket
+	if a.jiraClient != nil && !skipJiraAnalysis {
+		mgmtTicket := jira.ExtractMGMTTicketFromTitle(prInfo.Title)
+		if mgmtTicket != "" {
+			logger.Debug("Found MGMT ticket in PR title: %s", mgmtTicket)
+			jiraAnalysis, relatedPRs := a.performJiraAnalysis(mgmtTicket, prInfo)
+			result.JiraAnalysis = jiraAnalysis
+			result.RelatedPRs = relatedPRs
+		}
+	}
+
+	return result, nil
+}
+
+// getBranches returns cached branch information or fetches it if not cached
+func (a *Analyzer) getBranches() ([]github.BranchInfo, error) {
+	// Check cache first (read lock)
+	a.branchCacheMux.RLock()
+	if len(a.branchCache) > 0 {
+		cached := make([]github.BranchInfo, len(a.branchCache))
+		copy(cached, a.branchCache)
+		a.branchCacheMux.RUnlock()
+		logger.Debug("Using cached branch information (%d branches)", len(cached))
+		return cached, nil
+	}
+	a.branchCacheMux.RUnlock()
+
+	// Not cached, fetch and cache (write lock)
+	a.branchCacheMux.Lock()
+	defer a.branchCacheMux.Unlock()
+
+	// Double-check cache in case another goroutine populated it
+	if len(a.branchCache) > 0 {
+		cached := make([]github.BranchInfo, len(a.branchCache))
+		copy(cached, a.branchCache)
+		logger.Debug("Using newly cached branch information (%d branches)", len(cached))
+		return cached, nil
+	}
+
+	// Fetch branches from GitHub API
+	logger.Debug("Fetching branch information from GitHub API")
+	branchInfos, err := a.githubClient.GetAllReleaseBranches(a.config.Owner, a.config.Repository)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get release branches: %w", err)
+	}
+
+	// Cache the results
+	a.branchCache = make([]github.BranchInfo, len(branchInfos))
+	copy(a.branchCache, branchInfos)
+
+	logger.Debug("Cached %d release branches", len(branchInfos))
+	return branchInfos, nil
+}
+
+// performJiraAnalysis analyzes JIRA tickets and finds related PRs.
+func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRInfo) (*models.JiraAnalysis, []models.RelatedPR) {
+	logger.Debug("Starting JIRA analysis for ticket: %s", mainTicket)
+
+	// Get all cloned issues related to the main ticket
+	allIssues, err := a.jiraClient.GetAllClonedIssues(mainTicket)
+	if err != nil {
+		logger.Debug("Failed to get cloned issues for %s: %v", mainTicket, err)
+		return &models.JiraAnalysis{
+			MainTicket:      mainTicket,
+			AnalysisSuccess: false,
+			ErrorMessage:    fmt.Sprintf("Failed to get cloned issues: %v", err),
+		}, nil
+	}
+
+	var allTickets []string
+	var allPRURLs []string
+	var uniqueRelatedPRs []models.RelatedPR
+	processedPRs := make(map[string]bool)
+
+	// Extract PR URLs from all issues
+	for _, issue := range allIssues {
+		allTickets = append(allTickets, issue.Key)
+		prURLs := a.jiraClient.ExtractGitHubPRsFromIssue(issue)
+		allPRURLs = append(allPRURLs, prURLs...)
+
+		// Process each PR URL
+		for _, prURL := range prURLs {
+			if processedPRs[prURL] {
+				continue
+			}
+			processedPRs[prURL] = true
+
+			// Skip the original PR
+			if strings.Contains(prURL, fmt.Sprintf("/pull/%d", originalPR.Number)) {
+				continue
+			}
+
+			// Check if this PR is from the current repository
+			if !strings.Contains(prURL, fmt.Sprintf("github.com/%s/%s", a.config.Owner, a.config.Repository)) {
+				continue
+			}
+
+			// Extract PR number from URL
+			prNumber := extractPRNumberFromURL(prURL)
+			if prNumber == 0 {
+				continue
+			}
+
+			// Analyze this related PR
+			relatedPRInfo, err := a.githubClient.GetPRInfo(a.config.Owner, a.config.Repository, prNumber)
+			if err != nil {
+				logger.Debug("Failed to get info for related PR #%d: %v", prNumber, err)
+				continue
+			}
+
+			// Get branch presence for this related PR
+			branchInfos, err := a.getBranches()
+			if err != nil {
+				logger.Debug("Failed to get release branches for related PR #%d: %v", prNumber, err)
+				continue
+			}
+
+			var branchPresences []models.BranchPresence
+			for _, branchInfo := range branchInfos {
+				found, mergedAt, err := a.githubClient.CheckCommitInBranch(a.config.Owner, a.config.Repository, relatedPRInfo.Hash, branchInfo.Name)
+				if err != nil {
+					continue
+				}
+
+				// Get release information for ACM/MCE branches
+				var releasedVersions []string
+				gaStatus := models.GAStatus{}
+				var upcomingGAs []models.UpcomingGA
+
+				// Always calculate GA status for ACM/MCE branches to provide context
+				if branchInfo.Pattern == "release-ocm-" {
+					var gaErr error
+					gaStatus, gaErr = a.gaParser.GetGAStatus(branchInfo.Name, mergedAt)
+					if gaErr != nil {
+						logger.Debug("Warning: failed to get GA status for related PR #%d: %v", prNumber, gaErr)
+					}
+
+					// Get upcoming GA versions
+					upcomingGAs, gaErr = a.gaParser.GetUpcomingGAVersions(branchInfo.Name, mergedAt)
+					if gaErr != nil {
+						logger.Debug("Warning: failed to get upcoming GA versions for related PR #%d: %v", prNumber, gaErr)
+					}
+				}
+
+				if found {
+					// For Version-prefixed branches (v*), find the exact release versions
+					if branchInfo.Pattern == "v" {
+						foundTags, err := a.githubClient.FindCommitInVersionTags(
+							a.config.Owner,
+							a.config.Repository,
+							relatedPRInfo.Hash,
+							branchInfo.Name,
+						)
+						if err != nil {
+							logger.Debug("Warning: failed to find release versions for related PR #%d: %v", prNumber, err)
+						} else {
+							releasedVersions = foundTags
+						}
+					}
+				}
+
+				presence := models.BranchPresence{
+					BranchName:       branchInfo.Name,
+					Pattern:          branchInfo.Pattern,
+					Version:          branchInfo.Version,
+					MergedAt:         mergedAt,
+					Found:            found,
+					ReleasedVersions: releasedVersions,
+					GAStatus:         gaStatus,
+					UpcomingGAs:      upcomingGAs,
+				}
+
+				branchPresences = append(branchPresences, presence)
+			}
+
+			// Find which JIRA tickets are associated with this PR
+			var associatedTickets []string
+			for _, ticket := range allTickets {
+				// Check if this PR URL is mentioned in the ticket
+				for _, ticketPRURL := range allPRURLs {
+					if ticketPRURL == prURL {
+						associatedTickets = append(associatedTickets, ticket)
+						break
+					}
+				}
+			}
+
+			relatedPR := models.RelatedPR{
+				Number:          prNumber,
+				Title:           relatedPRInfo.Title,
+				URL:             prURL,
+				Hash:            relatedPRInfo.Hash,
+				JiraTickets:     associatedTickets,
+				ReleaseBranches: branchPresences,
+			}
+
+			uniqueRelatedPRs = append(uniqueRelatedPRs, relatedPR)
+		}
+	}
+
+	// Remove duplicates from allPRURLs
+	seen := make(map[string]bool)
+	var uniquePRURLs []string
+	for _, prURL := range allPRURLs {
+		if !seen[prURL] {
+			seen[prURL] = true
+			uniquePRURLs = append(uniquePRURLs, prURL)
+		}
+	}
+
+	jiraAnalysis := &models.JiraAnalysis{
+		MainTicket:      mainTicket,
+		AllTickets:      allTickets,
+		RelatedPRURLs:   uniquePRURLs,
+		AnalysisSuccess: true,
+	}
+
+	return jiraAnalysis, uniqueRelatedPRs
+}
+
+// extractPRNumberFromURL extracts PR number from GitHub PR URL.
+func extractPRNumberFromURL(url string) int {
+	parts := strings.Split(url, "/")
+	if len(parts) < 2 {
+		return 0
+	}
+
+	// URL format: https://github.com/owner/repo/pull/123
+	for i, part := range parts {
+		if part == "pull" && i+1 < len(parts) {
+			var prNumber int
+			if _, err := fmt.Sscanf(parts[i+1], "%d", &prNumber); err == nil {
+				return prNumber
+			}
+		}
+	}
+	return 0
+}
+
+// SearchSlackMessages searches for PR-related messages in the configured Slack channel.
+func (a *Analyzer) SearchSlackMessages(ctx context.Context, limit int) ([]slack.SearchResult, error) {
+	if a.config.SlackChannel == "" {
+		return nil, fmt.Errorf("slack channel not configured")
+	}
+
+	if a.config.SlackXOXD == "" || a.config.SlackXOXC == "" {
+		return nil, fmt.Errorf("slack tokens not configured")
+	}
+
+	logger.Debug("Searching Slack channel: %s", a.config.SlackChannel)
+
+	// Get channel ID
+	channelID, err := a.slackClient.GetChannelID(ctx, a.config.SlackChannel)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel ID: %w", err)
+	}
+
+	logger.Debug("Found channel ID: %s", channelID)
+
+	// Get messages from channel
+	messages, err := a.slackClient.GetChannelMessages(ctx, channelID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel messages: %w", err)
+	}
+
+	logger.Debug("Retrieved %d messages from Slack channel", len(messages))
+
+	// Search for PR-related messages
+	results := a.slackClient.SearchPRMessages(messages, a.config.SlackChannel)
+
+	logger.Debug("Found %d PR-related messages", len(results))
+
+	return results, nil
+}
+
+// FindLatestVersionMessage finds the latest message containing a specific version and Upstream SHA list link.
+func (a *Analyzer) FindLatestVersionMessage(ctx context.Context, targetVersion string, limit int) (*slack.VersionMessage, error) {
+	if a.config.SlackChannel == "" {
+		return nil, fmt.Errorf("slack channel not configured")
+	}
+
+	if a.config.SlackXOXD == "" || a.config.SlackXOXC == "" {
+		return nil, fmt.Errorf("slack tokens not configured")
+	}
+
+	logger.Debug("Searching for version %s in Slack channel: %s", targetVersion, a.config.SlackChannel)
+
+	// Get channel ID
+	channelID, err := a.slackClient.GetChannelID(ctx, a.config.SlackChannel)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel ID: %w", err)
+	}
+
+	logger.Debug("Found channel ID: %s", channelID)
+
+	// Get messages from channel
+	messages, err := a.slackClient.GetChannelMessages(ctx, channelID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel messages: %w", err)
+	}
+
+	logger.Debug("Retrieved %d messages from Slack channel", len(messages))
+
+	// Find the latest message with the target version and Upstream SHA list
+	versionMessage := a.slackClient.FindLatestVersionMessage(messages, a.config.SlackChannel, targetVersion)
+
+	if versionMessage != nil {
+		logger.Debug("Found latest message for version %s: %s", targetVersion, versionMessage.Timestamp.Format("2006-01-02 15:04:05"))
+	} else {
+		logger.Debug("No message found for version %s with Upstream SHA list", targetVersion)
+	}
+
+	return versionMessage, nil
+}
+
+// TestSlackAuth tests Slack authentication and shows available scopes
+func (a *Analyzer) TestSlackAuth(ctx context.Context) error {
+	if a.config.SlackChannel == "" {
+		return fmt.Errorf("slack channel not configured")
+	}
+
+	if a.config.SlackXOXD == "" || a.config.SlackXOXC == "" {
+		return fmt.Errorf("slack tokens not configured")
+	}
+
+	logger.Debug("Testing Slack authentication")
+
+	// Test authentication
+	if err := a.slackClient.TestAuth(ctx); err != nil {
+		return fmt.Errorf("slack authentication failed: %w", err)
+	}
+
+	return nil
+}
+
+// PrintSummary prints a formatted summary of the analysis result.
+func (a *Analyzer) PrintSummary(result *models.PRAnalysisResult) {
+	fmt.Printf("\n=== PR Analysis Summary ===\n")
+	fmt.Printf("PR #%d: %s\n", result.PR.Number, result.PR.Title)
+	fmt.Printf("Hash: %s\n", result.PR.Hash)
+	fmt.Printf("Merged to '%s' at: %s\n", result.PR.MergedInto, models.FormatDate(result.PR.MergedAt))
+	fmt.Printf("URL: %s\n", result.PR.URL)
+
+	// Add JIRA analysis to the summary if available
+	if result.JiraAnalysis != nil && result.JiraAnalysis.AnalysisSuccess {
+		// Count backport PRs (exclude the original PR)
+		backportCount := 0
+		for _, relatedPR := range result.RelatedPRs {
+			if relatedPR.Number != result.PR.Number {
+				backportCount++
+			}
+		}
+
+		if backportCount > 0 {
+			pluralS := "s"
+			if backportCount == 1 {
+				pluralS = ""
+			}
+			fmt.Printf("\n📋 JIRA Ticket: %s\n", result.JiraAnalysis.MainTicket)
+			fmt.Printf("🔗 Found %d related backport PR%s:\n", backportCount, pluralS)
+
+			for _, relatedPR := range result.RelatedPRs {
+				if relatedPR.Number != result.PR.Number {
+					fmt.Printf("  • PR #%d: %s\n", relatedPR.Number, relatedPR.Title)
+					fmt.Printf("    URL: %s\n", relatedPR.URL)
+					fmt.Printf("    Hash: %s\n", relatedPR.Hash)
+				}
+			}
+		}
+	}
+
+	fmt.Printf("\n=== Release Branch Analysis ===\n")
+
+	// Collect all branches from original PR and related PRs
+	allBranchesMap := make(map[string]models.BranchPresence)
+
+	// Add original PR branches
+	for _, branch := range result.ReleaseBranches {
+		if branch.Found {
+			allBranchesMap[branch.BranchName] = branch
+		}
+	}
+
+	// Add related PR branches
+	if result.JiraAnalysis != nil && result.JiraAnalysis.AnalysisSuccess {
+		for _, relatedPR := range result.RelatedPRs {
+			if relatedPR.Number != result.PR.Number {
+				for _, branch := range relatedPR.ReleaseBranches {
+					if branch.Found {
+						// If we already have this branch from original PR, prefer the related PR data
+						// if the original PR is not actually found in that branch
+						if existing, exists := allBranchesMap[branch.BranchName]; exists {
+							// If original PR is not found in this branch, use related PR data instead
+							if !existing.Found {
+								allBranchesMap[branch.BranchName] = branch
+							}
+						} else {
+							// Branch not in map yet, add it
+							allBranchesMap[branch.BranchName] = branch
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Convert map back to slice for consistent ordering
+	var allFoundBranches []models.BranchPresence
+	for _, branch := range allBranchesMap {
+		allFoundBranches = append(allFoundBranches, branch)
+	}
+
+	// Group branches by pattern for better organization
+	patternGroups := make(map[string][]models.BranchPresence)
+	patternOrder := []string{"release-ocm-", "release-", "release-v", "v"}
+
+	for _, branch := range allFoundBranches {
+		patternGroups[branch.Pattern] = append(patternGroups[branch.Pattern], branch)
+	}
+
+	// Sort branches within each pattern group by version
+	for pattern := range patternGroups {
+		branches := patternGroups[pattern]
+		sort.Slice(branches, func(i, j int) bool {
+			// Parse version numbers for proper sorting (e.g., "2.13" < "2.14" < "2.15")
+			versionI := parseVersionNumber(branches[i].Version)
+			versionJ := parseVersionNumber(branches[j].Version)
+			return versionI < versionJ
+		})
+		patternGroups[pattern] = branches
+	}
+
+	if len(allFoundBranches) > 0 {
+		fmt.Printf("\n✓ Found in %d release branches:\n", len(allFoundBranches))
+
+		// Display found branches grouped by pattern
+		for _, pattern := range patternOrder {
+			branches := patternGroups[pattern]
+			if len(branches) > 0 {
+				fmt.Printf("\n  %s branches (%d):\n", getPatternDescription(pattern), len(branches))
+				for _, branch := range branches {
+					isNextVersion := strings.Contains(branch.Version, "Next Version") ||
+						(branch.GAStatus.ACM.Status == "Next Version" || branch.GAStatus.MCE.Status == "Next Version")
+
+					nextVersionText := ""
+					if isNextVersion {
+						nextVersionText = " (Next Version)"
+					}
+
+					fmt.Printf("    - %s (v%s)%s", branch.BranchName, branch.Version, nextVersionText)
+					if branch.MergedAt != nil {
+						fmt.Printf(" - merged at %s", branch.MergedAt.Format("01-02-2006"))
+					}
+					fmt.Printf("\n")
+
+					// Show release information for Version-prefixed branches
+					if len(branch.ReleasedVersions) > 0 {
+						fmt.Printf("      First released in: %s\n", strings.Join(branch.ReleasedVersions, ", "))
+					}
+
+					// Show First Release Information if we have upcoming GAs that are not all in future
+					if !isNextVersion && len(branch.UpcomingGAs) > 0 {
+						// Check if all GA dates are in the future (not released yet)
+						allGAsInFuture := true
+						now := time.Now()
+						for _, upcomingGA := range branch.UpcomingGAs {
+							if upcomingGA.GADate != nil && upcomingGA.GADate.Before(now) {
+								allGAsInFuture = false
+								break
+							}
+						}
+
+						if !allGAsInFuture {
+							fmt.Printf("\n      First Released In:")
+
+							// Group by version to deduplicate
+							versionsSeen := make(map[string]bool)
+							for _, upcomingGA := range branch.UpcomingGAs {
+								versionKey := fmt.Sprintf("%s-%s", upcomingGA.Product, upcomingGA.Version)
+								if !versionsSeen[versionKey] {
+									versionsSeen[versionKey] = true
+
+									fmt.Printf("\n        %s %s: %s", upcomingGA.Product, upcomingGA.Version,
+										models.FormatDate(upcomingGA.GADate))
+								}
+							}
+							fmt.Printf("\n")
+						}
+
+						// Show Latest GA Status (already released versions) from GAStatus
+						hasLatestGA := (branch.GAStatus.ACM.Version != "" && branch.GAStatus.ACM.Status == "GA" && branch.GAStatus.ACM.GADate != nil && branch.GAStatus.ACM.GADate.Before(now)) ||
+							(branch.GAStatus.MCE.Version != "" && branch.GAStatus.MCE.Status == "GA" && branch.GAStatus.MCE.GADate != nil && branch.GAStatus.MCE.GADate.Before(now))
+
+						if hasLatestGA {
+							fmt.Printf("\n      Latest GA Status:")
+
+							if branch.GAStatus.ACM.Version != "" && branch.GAStatus.ACM.Status == "GA" && branch.GAStatus.ACM.GADate != nil && branch.GAStatus.ACM.GADate.Before(now) {
+								fmt.Printf("\n        ACM %s: Released (GA: %s)", branch.GAStatus.ACM.Version, models.FormatDate(branch.GAStatus.ACM.GADate))
+							}
+							if branch.GAStatus.MCE.Version != "" && branch.GAStatus.MCE.Status == "GA" && branch.GAStatus.MCE.GADate != nil && branch.GAStatus.MCE.GADate.Before(now) {
+								fmt.Printf("\n        MCE %s: Released (GA: %s)", branch.GAStatus.MCE.Version, models.FormatDate(branch.GAStatus.MCE.GADate))
+							}
+						} else if allGAsInFuture && len(branch.UpcomingGAs) > 0 {
+							// Only show "Not released yet" if we have upcoming GAs but no released versions
+							fmt.Printf("\n      Latest GA Status: Not released yet")
+						}
+
+						// Print Next GA status information (future GAs) - only as additional context
+						futureGAs := make([]models.UpcomingGA, 0)
+						for _, upcomingGA := range branch.UpcomingGAs {
+							if upcomingGA.GADate != nil && upcomingGA.GADate.After(now) {
+								futureGAs = append(futureGAs, upcomingGA)
+							}
+						}
+
+						if len(futureGAs) > 0 {
+							fmt.Printf("\n      Next GA Status:")
+							versionsSeen := make(map[string]bool)
+							for _, upcomingGA := range futureGAs {
+								versionKey := fmt.Sprintf("%s-%s", upcomingGA.Product, upcomingGA.Version)
+								if !versionsSeen[versionKey] {
+									versionsSeen[versionKey] = true
+									fmt.Printf("\n        %s %s: Next Version (GA: %s)", upcomingGA.Product, upcomingGA.Version,
+										models.FormatDate(upcomingGA.GADate))
+								}
+							}
+						}
+					}
+
+					fmt.Printf("\n")
+					fmt.Printf("\n") // Add spacing between branches
+				}
+			}
+		}
+	}
+
+	// Temporarily commented out - not showing branches where PR is not found
+	/*
+		if len(notFoundBranches) > 0 {
+			fmt.Printf("\n✗ Not found in %d release branches:\n", len(notFoundBranches))
+
+			// Display not found branches grouped by pattern
+			for _, pattern := range patternOrder {
+				branches := patternNotFound[pattern]
+				if len(branches) > 0 {
+					fmt.Printf("\n  %s branches (%d):\n", getPatternDescription(pattern), len(branches))
+					for _, branch := range branches {
+						fmt.Printf("    - %s (v%s)\n", branch.BranchName, branch.Version)
+					}
+				}
+			}
+		}
+	*/
+
+	fmt.Printf("\nAnalysis completed at: %s\n", result.AnalyzedAt.Format("01-02-2006 15:04:05"))
+}
+
+// getPatternDescription returns a human-readable description for branch patterns.
+func getPatternDescription(pattern string) string {
+	switch pattern {
+	case "release-ocm-":
+		return "ACM/MCE"
+	case "release-":
+		return "OpenShift"
+	case "release-v":
+		return "Version-tagged"
+	case "v":
+		return "Version-prefixed"
+	default:
+		return pattern
+	}
+}
+
+// parseVersionNumber extracts and parses version number from version string for sorting.
+// Examples: "2.13" -> 2.13, "v2.40" -> 2.40, "Next Version" -> 999.0 (sorts last)
+func parseVersionNumber(version string) float64 {
+	// Handle special cases
+	if strings.Contains(version, "Next Version") {
+		return 999.0 // Sort "Next Version" entries last
+	}
+
+	// Strip "v" prefix if present
+	version = strings.TrimPrefix(version, "v")
+
+	// Parse as float (handles X.Y format)
+	if parsed, err := strconv.ParseFloat(version, 64); err == nil {
+		return parsed
+	}
+
+	// If parsing fails, return 0 (sorts first)
+	return 0.0
+}
+
+// performMCEValidation performs MCE snapshot validation for upcoming GAs.
+func (a *Analyzer) performMCEValidation(upcomingGAs []models.UpcomingGA, prCommitSHA string) []models.UpcomingGA {
+	if len(upcomingGAs) == 0 {
+		return upcomingGAs
+	}
+
+	logger.Debug("Starting MCE validation for %d upcoming GAs", len(upcomingGAs))
+
+	// Create a copy of the slice to modify with validation results
+	validatedGAs := make([]models.UpcomingGA, len(upcomingGAs))
+	copy(validatedGAs, upcomingGAs)
+
+	// Use goroutines to parallelize MCE validation
+	var wg sync.WaitGroup
+
+	for i := range validatedGAs {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+
+			ga := &validatedGAs[index]
+			logger.Debug("Validating MCE snapshot for %s %s", ga.Product, ga.Version)
+
+			validation, err := a.gitlabClient.ValidateMCESnapshot(ga.Product, ga.Version, ga.GADate, prCommitSHA)
+			if err != nil {
+				logger.Debug("Failed to validate MCE snapshot for %s %s: %v", ga.Product, ga.Version, err)
+				ga.MCEValidation = &models.MCESnapshotValidation{
+					Product:           ga.Product,
+					Version:           ga.Version,
+					GADate:            ga.GADate,
+					ValidationSuccess: false,
+					ErrorMessage:      fmt.Sprintf("Validation failed: %v", err),
+				}
+			} else if validation != nil && validation.ValidationSuccess {
+				// If validation succeeded, now compare PR commit with extracted SHA
+				prBeforeSnapshot, err := a.comparePRCommitWithSnapshot(prCommitSHA, validation.AssistedServiceSHA)
+				if err != nil {
+					logger.Debug("Failed to compare PR commit with snapshot SHA: %v", err)
+					validation.ErrorMessage = fmt.Sprintf("Failed to compare commits: %v", err)
+					validation.ValidationSuccess = false
+				} else {
+					validation.PRCommitBeforeSHA = prBeforeSnapshot
+					logger.Debug("PR commit before snapshot SHA: %v", prBeforeSnapshot)
+				}
+				ga.MCEValidation = validation
+			} else {
+				ga.MCEValidation = validation
+			}
+		}(i)
+	}
+
+	// Wait for all validations to complete
+	wg.Wait()
+
+	logger.Debug("Completed MCE validation for all GAs")
+	return validatedGAs
+}
+
+// comparePRCommitWithSnapshot compares if PR commit is before the snapshot commit.
+func (a *Analyzer) comparePRCommitWithSnapshot(prCommitSHA, snapshotCommitSHA string) (bool, error) {
+	if prCommitSHA == "" || snapshotCommitSHA == "" {
+		return false, fmt.Errorf("both commit SHAs are required")
+	}
+
+	logger.Debug("Comparing PR commit %s with snapshot commit %s", prCommitSHA[:8], snapshotCommitSHA[:8])
+
+	// Get PR commit information
+	prCommit, _, err := a.githubClient.GetCommit(a.config.Owner, a.config.Repository, prCommitSHA)
+	if err != nil {
+		return false, fmt.Errorf("failed to get PR commit: %w", err)
+	}
+
+	// Get snapshot commit information
+	snapshotCommit, _, err := a.githubClient.GetCommit(a.config.Owner, a.config.Repository, snapshotCommitSHA)
+	if err != nil {
+		return false, fmt.Errorf("failed to get snapshot commit: %w", err)
+	}
+
+	// Compare commit dates
+	prCommitDate := prCommit.GetCommit().GetCommitter().GetDate()
+	snapshotCommitDate := snapshotCommit.GetCommit().GetCommitter().GetDate()
+
+	prBefore := prCommitDate.Time.Before(snapshotCommitDate.Time)
+
+	logger.Debug("PR commit date: %v, Snapshot commit date: %v, PR before: %v",
+		prCommitDate.Time, snapshotCommitDate.Time, prBefore)
+
+	return prBefore, nil
+}

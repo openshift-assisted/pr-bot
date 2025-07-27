@@ -1,0 +1,21 @@
+# Example configuration file for merged-pr-bot
+# Copy this file to config.yaml and customize as needed
+
+github:
+  # GitHub personal access token for API authentication
+  # Get one from: https://github.com/settings/tokens
+  # Recommended scopes: repo (for private repos) or public_repo (for public repos)
+  token: "your-github-token-here"
+  
+  # Repository owner (organization or username)
+  owner: "openshift"
+  
+  # Repository name
+  repository: "assisted-service"
+  
+  # Branch prefix to search for release branches
+  # Example: "release-ocm-" will match "release-ocm-2.13", "release-ocm-2.14", etc.
+  branch_prefix: "release-ocm-"
+  
+  # Default branch name (usually "main" or "master")
+  default_branch: "master" 
