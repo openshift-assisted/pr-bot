@@ -81,6 +81,29 @@ For JIRA ticket analysis, you'll need a JIRA API token:
 - The token should have read access to JIRA issues
 - Used to find cloned tickets and extract GitHub PR URLs from JIRA tickets
 
+### GitLab Token Setup (Optional for MCE Validation)
+
+For MCE snapshot validation (used in PR analysis and version comparison), you'll need a GitLab API token:
+
+1. **Get GitLab API Token**:
+   - Go to [GitLab Personal Access Tokens](https://gitlab.cee.redhat.com/-/user_settings/personal_access_tokens)
+   - Click "Add new token"
+   - Give it a name like "pr-bot"
+   - Select scope: `read_api` (for reading repository files)
+   - Set expiration date (optional)
+   - Copy the generated token
+
+2. **Set as environment variable**:
+   ```bash
+   export PR_BOT_GITLAB_TOKEN="your-gitlab-token-here"
+   ```
+
+**Important Notes:**
+- Required for MCE snapshot validation (SHA extraction from down-sha.yaml)
+- Used in PR analysis to validate against MCE snapshots  
+- Enables version comparison features (`-v` flag)
+- Token should have `read_api` scope to access MCE repository files
+
 ### Setup
 
 ```bash
@@ -114,6 +137,12 @@ PR_BOT_GITHUB_DEFAULT_BRANCH=master
 PR_BOT_SLACK_XOXD=xoxd-your-browser-token-here
 PR_BOT_SLACK_XOXC=xoxc-your-browser-token-here
 PR_BOT_SLACK_CHANNEL=team-acm-downstream-notifcation
+
+# GitLab Configuration (for MCE snapshot validation)
+PR_BOT_GITLAB_TOKEN=your-gitlab-token-here
+
+# JIRA Configuration (for MGMT ticket analysis)
+PR_BOT_JIRA_TOKEN=your-jira-token-here
 ```
 
 ### Optional: Build Binary
@@ -137,6 +166,8 @@ export PR_BOT_GITHUB_DEFAULT_BRANCH="master"
 export PR_BOT_SLACK_XOXD="xoxd-your-browser-token-here"
 export PR_BOT_SLACK_XOXC="xoxc-your-browser-token-here"
 export PR_BOT_SLACK_CHANNEL="team-acm-downstream-notifcation"
+export PR_BOT_GITLAB_TOKEN="your-gitlab-token-here"
+export PR_BOT_JIRA_TOKEN="your-jira-token-here"
 ```
 
 ### Config File
@@ -154,6 +185,10 @@ slack:
   xoxd: "xoxd-your-browser-token-here"
   xoxc: "xoxc-your-browser-token-here"
   channel: "team-acm-downstream-notifcation"
+gitlab:
+  token: "your-gitlab-token-here"
+jira:
+  token: "your-jira-token-here"
 ```
 
 ### Default Configuration
