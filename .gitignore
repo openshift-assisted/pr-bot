@@ -27,9 +27,9 @@ logs/
 
 # Data files (may contain sensitive information) 
 # data/ TODO: remove comment when public
-*.xlsx
-*.xls
-*.csv
+# *.xlsx TODO: remove comment when public
+# *.xls TODO: remove comment when public
+# *.csv TODO: remove comment when public
 
 # IDE and editor files
 .vscode/
