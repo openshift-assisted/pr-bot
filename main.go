@@ -691,10 +691,11 @@ func handleJiraTicketAnalysis(jiraInput string) {
 	prURLsMap := make(map[string]bool)
 	var uniquePRURLs []string
 
-	// Support both assisted-service and assisted-installer repositories
+	// Support assisted-service, assisted-installer, and assisted-installer-agent repositories
 	supportedRepos := []string{
 		fmt.Sprintf("github.com/%s/assisted-service/pull/", cfg.Owner),
 		fmt.Sprintf("github.com/%s/assisted-installer/pull/", cfg.Owner),
+		fmt.Sprintf("github.com/%s/assisted-installer-agent/pull/", cfg.Owner),
 	}
 
 	for _, prURL := range allPRURLs {
@@ -711,7 +712,7 @@ func handleJiraTicketAnalysis(jiraInput string) {
 	}
 
 	if len(uniquePRURLs) == 0 {
-		fmt.Printf("No GitHub PRs found for supported repositories (assisted-service, assisted-installer) in the related JIRA tickets\n")
+		fmt.Printf("No GitHub PRs found for supported repositories (assisted-service, assisted-installer, assisted-installer-agent) in the related JIRA tickets\n")
 		return
 	}
 
@@ -863,77 +864,83 @@ func handleJiraTicketAnalysis(jiraInput string) {
 					if branch.MergedAt != nil {
 						fmt.Printf(" - merged at %s", branch.MergedAt.Format("01-02-2006"))
 					}
+
 					fmt.Printf("\n")
 
-					// Show release information for Version-prefixed branches
-					if len(branch.ReleasedVersions) > 0 {
-						fmt.Printf("      First released in: %s\n", strings.Join(branch.ReleasedVersions, ", "))
-					}
-
-					// Show First Release Information if we have upcoming GAs that are not all in future
-					if !isNextVersion && len(branch.UpcomingGAs) > 0 {
-						// Check if all GA dates are in the future (not released yet)
-						allGAsInFuture := true
+					// Show release information
+					if !isNextVersion && branch.Found {
 						now := time.Now()
-						for _, upcomingGA := range branch.UpcomingGAs {
-							if upcomingGA.GADate != nil && upcomingGA.GADate.Before(now) {
-								allGAsInFuture = false
-								break
+
+						// Check if we have content to display
+						hasVersionContent := len(branch.ReleasedVersions) > 0 ||
+							len(branch.UpcomingGAs) > 0 ||
+							branch.Pattern == "release-ocm-"
+
+						if hasVersionContent {
+							fmt.Printf("\n      Release Version:")
+
+							// For Version-prefixed branches, show released versions
+							if len(branch.ReleasedVersions) > 0 {
+								fmt.Printf("\n        %s", strings.Join(branch.ReleasedVersions, ", "))
 							}
-						}
 
-						if !allGAsInFuture {
-							fmt.Printf("\n      First Released In:")
+							if len(branch.UpcomingGAs) == 0 {
+								// No upcoming GAs defined - show "Not released yet" only for ACM/MCE branches
+								if branch.Pattern == "release-ocm-" {
+									fmt.Printf("\n        Not released yet - no GA versions defined for this branch")
+								}
+							} else {
+								// For each product (ACM/MCE), show either:
+								// 1. The first released version (if any), OR
+								// 2. "Not released yet" for the earliest unreleased version (if no released versions)
+								productStatus := make(map[string]bool) // track if we found released version for each product
 
-							// Group by version to deduplicate
-							versionsSeen := make(map[string]bool)
-							for _, upcomingGA := range branch.UpcomingGAs {
-								versionKey := fmt.Sprintf("%s-%s", upcomingGA.Product, upcomingGA.Version)
-								if !versionsSeen[versionKey] {
-									versionsSeen[versionKey] = true
+								// First pass: find released versions
+								for _, upcomingGA := range branch.UpcomingGAs {
+									if upcomingGA.GADate != nil && upcomingGA.GADate.Before(now) {
+										// This is a released version
+										if !productStatus[upcomingGA.Product] {
+											productStatus[upcomingGA.Product] = true
+											fmt.Printf("\n        %s %s: Released (GA: %s)", upcomingGA.Product, upcomingGA.Version,
+												models.FormatDate(upcomingGA.GADate))
 
-									fmt.Printf("\n        %s %s: %s", upcomingGA.Product, upcomingGA.Version,
-										models.FormatDate(upcomingGA.GADate))
+											// Show the SHA from MCE validation if available
+											if upcomingGA.MCEValidation != nil && upcomingGA.MCEValidation.AssistedServiceSHA != "" {
+												componentName := upcomingGA.MCEValidation.ComponentName
+												if componentName == "" {
+													componentName = "assisted-service" // fallback for backward compatibility
+												}
+												fmt.Printf(" (%s latest commit SHA: %s)", componentName, upcomingGA.MCEValidation.AssistedServiceSHA[:8])
+											}
+										}
+									}
+								}
+
+								// Second pass: for products without released versions, show "Not released yet"
+								productNotReleased := make(map[string]bool)
+								for _, upcomingGA := range branch.UpcomingGAs {
+									if !productStatus[upcomingGA.Product] && !productNotReleased[upcomingGA.Product] {
+										// No released version found for this product, show first unreleased
+										productNotReleased[upcomingGA.Product] = true
+										fmt.Printf("\n        %s %s: Not released yet (GA: %s)", upcomingGA.Product, upcomingGA.Version,
+											models.FormatDate(upcomingGA.GADate))
+									}
 								}
 							}
 							fmt.Printf("\n")
-						}
 
-						// Show Latest GA Status (already released versions) from GAStatus
-						hasLatestGA := (branch.GAStatus.ACM.Version != "" && branch.GAStatus.ACM.Status == "GA" && branch.GAStatus.ACM.GADate != nil && branch.GAStatus.ACM.GADate.Before(now)) ||
-							(branch.GAStatus.MCE.Version != "" && branch.GAStatus.MCE.Status == "GA" && branch.GAStatus.MCE.GADate != nil && branch.GAStatus.MCE.GADate.Before(now))
+							// Show Latest GA Status (already released versions) from GAStatus
+							hasLatestGA := (branch.GAStatus.ACM.Version != "" && branch.GAStatus.ACM.Status == "GA" && branch.GAStatus.ACM.GADate != nil && branch.GAStatus.ACM.GADate.Before(now)) ||
+								(branch.GAStatus.MCE.Version != "" && branch.GAStatus.MCE.Status == "GA" && branch.GAStatus.MCE.GADate != nil && branch.GAStatus.MCE.GADate.Before(now))
 
-						if hasLatestGA {
-							fmt.Printf("\n      Latest GA Status:")
+							if hasLatestGA {
+								fmt.Printf("\n      Latest GA Status:")
 
-							if branch.GAStatus.ACM.Version != "" && branch.GAStatus.ACM.Status == "GA" && branch.GAStatus.ACM.GADate != nil && branch.GAStatus.ACM.GADate.Before(now) {
-								fmt.Printf("\n        ACM %s: Released (GA: %s)", branch.GAStatus.ACM.Version, models.FormatDate(branch.GAStatus.ACM.GADate))
-							}
-							if branch.GAStatus.MCE.Version != "" && branch.GAStatus.MCE.Status == "GA" && branch.GAStatus.MCE.GADate != nil && branch.GAStatus.MCE.GADate.Before(now) {
-								fmt.Printf("\n        MCE %s: Released (GA: %s)", branch.GAStatus.MCE.Version, models.FormatDate(branch.GAStatus.MCE.GADate))
-							}
-						} else if allGAsInFuture && len(branch.UpcomingGAs) > 0 {
-							// Only show "Not released yet" if we have upcoming GAs but no released versions
-							fmt.Printf("\n      Latest GA Status: Not released yet")
-						}
-
-						// Print Next GA status information (future GAs)
-						futureGAs := make([]models.UpcomingGA, 0)
-						for _, upcomingGA := range branch.UpcomingGAs {
-							if upcomingGA.GADate != nil && upcomingGA.GADate.After(now) {
-								futureGAs = append(futureGAs, upcomingGA)
-							}
-						}
-
-						if len(futureGAs) > 0 {
-							fmt.Printf("\n      Next GA Status:")
-							versionsSeen := make(map[string]bool)
-							for _, upcomingGA := range futureGAs {
-								versionKey := fmt.Sprintf("%s-%s", upcomingGA.Product, upcomingGA.Version)
-								if !versionsSeen[versionKey] {
-									versionsSeen[versionKey] = true
-									fmt.Printf("\n        %s %s: Next Version (GA: %s)", upcomingGA.Product, upcomingGA.Version,
-										models.FormatDate(upcomingGA.GADate))
+								if branch.GAStatus.ACM.Version != "" && branch.GAStatus.ACM.Status == "GA" && branch.GAStatus.ACM.GADate != nil && branch.GAStatus.ACM.GADate.Before(now) {
+									fmt.Printf("\n        ACM %s: Released (GA: %s)", branch.GAStatus.ACM.Version, models.FormatDate(branch.GAStatus.ACM.GADate))
+								}
+								if branch.GAStatus.MCE.Version != "" && branch.GAStatus.MCE.Status == "GA" && branch.GAStatus.MCE.GADate != nil && branch.GAStatus.MCE.GADate.Before(now) {
+									fmt.Printf("\n        MCE %s: Released (GA: %s)", branch.GAStatus.MCE.Version, models.FormatDate(branch.GAStatus.MCE.GADate))
 								}
 							}
 						}

@@ -179,13 +179,17 @@ Analyze a merged PR from any supported repository:
 
 # Analyze a PR from assisted-installer
 ./pr-bot -pr https://github.com/openshift/assisted-installer/pull/100
+
+# Analyze a PR from assisted-installer-agent
+./pr-bot -pr https://github.com/openshift/assisted-installer-agent/pull/200
 ```
 
 **Supported Repositories:**
 - `openshift/assisted-service`
 - `openshift/assisted-installer`
+- `openshift/assisted-installer-agent`
 
-The tool automatically detects the repository from the PR URL and performs the same analysis (GA status, MCE validation, etc.) for both repositories.
+The tool automatically detects the repository from the PR URL and performs the same analysis (GA status, MCE validation, etc.) for all supported repositories.
 
 ### Version Comparison
 
@@ -217,7 +221,7 @@ Or use just the ticket ID:
 
 This will:
 - Find all cloned JIRA tickets related to the main ticket
-- Extract all GitHub PR URLs from all related tickets (supports both assisted-service and assisted-installer repositories)
+- Extract all GitHub PR URLs from all related tickets (supports assisted-service, assisted-installer, and assisted-installer-agent repositories)
 - Analyze each PR across all release branches (with repository-specific context)
 - Provide a combined analysis showing all branches affected across all PRs
 - Show comprehensive release status information for each repository

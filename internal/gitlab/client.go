@@ -44,6 +44,10 @@ type DownSHA map[string]interface{}
 
 // ValidateMCESnapshot performs the complete MCE snapshot validation process.
 func (c *Client) ValidateMCESnapshot(product, version string, gaDate *time.Time, prCommitSHA string) (*models.MCESnapshotValidation, error) {
+	return c.ValidateMCESnapshotForComponent(product, version, gaDate, prCommitSHA, "assisted-service")
+}
+
+func (c *Client) ValidateMCESnapshotForComponent(product, version string, gaDate *time.Time, prCommitSHA, componentName string) (*models.MCESnapshotValidation, error) {
 	if gaDate == nil {
 		return nil, fmt.Errorf("GA date is required for validation")
 	}
@@ -51,9 +55,10 @@ func (c *Client) ValidateMCESnapshot(product, version string, gaDate *time.Time,
 	logger.Debug("Starting MCE snapshot validation for %s %s (GA: %s)", product, version, gaDate.Format("2006-01-02"))
 
 	result := &models.MCESnapshotValidation{
-		Product: product,
-		Version: version,
-		GADate:  gaDate,
+		Product:       product,
+		Version:       version,
+		GADate:        gaDate,
+		ComponentName: componentName,
 	}
 
 	// Calculate MCE branch name
@@ -92,13 +97,13 @@ func (c *Client) ValidateMCESnapshot(product, version string, gaDate *time.Time,
 		return result, nil
 	}
 
-	// Extract assisted-service SHA from down-sha.yaml
-	assistedSHA, err := c.ExtractAssistedServiceSHA(mceBranch, snapshotFolder)
+	// Extract component SHA from down-sha.yaml
+	componentSHA, err := c.ExtractComponentSHA(mceBranch, snapshotFolder, componentName)
 	if err != nil {
-		result.ErrorMessage = fmt.Sprintf("Failed to extract assisted-service SHA: %v", err)
+		result.ErrorMessage = fmt.Sprintf("Failed to extract %s SHA: %v", componentName, err)
 		return result, nil
 	}
-	result.AssistedServiceSHA = assistedSHA
+	result.AssistedServiceSHA = componentSHA
 
 	// TODO: Compare PR commit with extracted SHA
 	// This would require GitHub integration which we'll handle in the analyzer
@@ -239,10 +244,25 @@ func (c *Client) validateVersionInBuildStatus(mceBranch, snapshotFolder, expecte
 	return matches, nil
 }
 
-// ExtractAssistedServiceSHA extracts the SHA for multicluster-engine-assisted-service-9 from down-sha.yaml.
-func (c *Client) ExtractAssistedServiceSHA(mceBranch, snapshotFolder string) (string, error) {
-	logger.Debug("Extracting assisted-service SHA from down-sha.yaml")
+// ExtractComponentSHA extracts the SHA for a specific component from down-sha.yaml.
+func (c *Client) ExtractComponentSHA(mceBranch, snapshotFolder, componentName string) (string, error) {
+	logger.Debug("Extracting %s SHA from down-sha.yaml", componentName)
 
+	// Try to extract SHA from the specified snapshot folder first
+	sha, err := c.extractComponentSHAFromSnapshot(mceBranch, snapshotFolder, componentName)
+	if err == nil {
+		return sha, nil
+	}
+
+	logger.Debug("Failed to extract SHA from snapshot %s: %v", snapshotFolder, err)
+	logger.Debug("Trying fallback to previous snapshots...")
+
+	// Fallback: try previous snapshot folders with the same version
+	return c.extractComponentSHAWithFallback(mceBranch, snapshotFolder, componentName)
+}
+
+// extractComponentSHAFromSnapshot extracts SHA from a specific snapshot folder.
+func (c *Client) extractComponentSHAFromSnapshot(mceBranch, snapshotFolder, componentName string) (string, error) {
 	projectID := "acm-cicd/mce-bb2"
 	filePath := fmt.Sprintf("snapshots/%s/down-sha.yaml", snapshotFolder)
 
@@ -308,70 +328,84 @@ func (c *Client) ExtractAssistedServiceSHA(mceBranch, snapshotFolder string) (st
 		logger.Debug("  - %s", key)
 	}
 
-	// Look for multicluster-engine-assisted-service-9
-	assistedServiceComponent, exists := componentMap["multicluster-engine-assisted-service-9"]
-	if !exists {
-		// Try alternative component names that might contain assisted-service
+	// Look for the component (e.g., multicluster-engine-assisted-service-9, multicluster-engine-assisted-installer-X, or multicluster-engine-assisted-installer-agent-Y)
+	var targetComponent interface{}
+	var componentFound bool
+
+	// Try to find component by exact pattern match first
+	expectedPrefix := fmt.Sprintf("multicluster-engine-%s-", componentName)
+	for key, value := range componentMap {
+		if strings.HasPrefix(key, expectedPrefix) {
+			logger.Debug("Found component by prefix: %s", key)
+			targetComponent = value
+			componentFound = true
+			break
+		}
+	}
+
+	// If not found by prefix, try substring match for backward compatibility
+	if !componentFound {
 		for key, value := range componentMap {
-			if strings.Contains(key, "assisted-service") {
-				logger.Debug("Found potential assisted-service component: %s", key)
-				assistedServiceComponent = value
-				exists = true
+			if strings.Contains(key, componentName) {
+				logger.Debug("Found component by substring: %s", key)
+				targetComponent = value
+				componentFound = true
 				break
 			}
 		}
+	}
 
-		if !exists {
-			return "", fmt.Errorf("multicluster-engine-assisted-service-9 component not found in component map")
-		}
+	if !componentFound {
+		return "", fmt.Errorf("component matching '%s' not found in component map", componentName)
 	}
 
 	// Convert to map[string]interface{} for repository navigation
-	var assistedServiceMap map[string]interface{}
+	var componentMap2 map[string]interface{}
 
-	if mapInterfaceInterface, ok := assistedServiceComponent.(map[interface{}]interface{}); ok {
+	if mapInterfaceInterface, ok := targetComponent.(map[interface{}]interface{}); ok {
 		// Convert map[interface{}]interface{} to map[string]interface{}
-		assistedServiceMap = make(map[string]interface{})
+		componentMap2 = make(map[string]interface{})
 		for k, v := range mapInterfaceInterface {
 			if keyStr, ok := k.(string); ok {
-				assistedServiceMap[keyStr] = v
+				componentMap2[keyStr] = v
 			}
 		}
-	} else if mapStringInterface, ok := assistedServiceComponent.(map[string]interface{}); ok {
+	} else if mapStringInterface, ok := targetComponent.(map[string]interface{}); ok {
 		// Already the correct type
-		assistedServiceMap = mapStringInterface
+		componentMap2 = mapStringInterface
 	} else {
-		return "", fmt.Errorf("assisted-service component has unexpected structure (not a map), type: %T", assistedServiceComponent)
+		return "", fmt.Errorf("%s component has unexpected structure (not a map), type: %T", componentName, targetComponent)
 	}
 
-	// Look for openshift/assisted-service
-	assistedService, exists := assistedServiceMap["openshift/assisted-service"]
+	// Look for openshift/{componentName} repository
+	repoKey := fmt.Sprintf("openshift/%s", componentName)
+	targetRepo, exists := componentMap2[repoKey]
 	if !exists {
-		return "", fmt.Errorf("openshift/assisted-service repository not found in assisted-service component")
+		return "", fmt.Errorf("%s repository not found in %s component", repoKey, componentName)
 	}
 
 	// Convert to map[string]interface{} for SHA extraction
-	var assistedServiceRepoMap map[string]interface{}
+	var repoMap map[string]interface{}
 
-	if mapInterfaceInterface, ok := assistedService.(map[interface{}]interface{}); ok {
+	if mapInterfaceInterface, ok := targetRepo.(map[interface{}]interface{}); ok {
 		// Convert map[interface{}]interface{} to map[string]interface{}
-		assistedServiceRepoMap = make(map[string]interface{})
+		repoMap = make(map[string]interface{})
 		for k, v := range mapInterfaceInterface {
 			if keyStr, ok := k.(string); ok {
-				assistedServiceRepoMap[keyStr] = v
+				repoMap[keyStr] = v
 			}
 		}
-	} else if mapStringInterface, ok := assistedService.(map[string]interface{}); ok {
+	} else if mapStringInterface, ok := targetRepo.(map[string]interface{}); ok {
 		// Already the correct type
-		assistedServiceRepoMap = mapStringInterface
+		repoMap = mapStringInterface
 	} else {
-		return "", fmt.Errorf("openshift/assisted-service has unexpected structure (not a map), type: %T", assistedService)
+		return "", fmt.Errorf("%s has unexpected structure (not a map), type: %T", repoKey, targetRepo)
 	}
 
 	// Extract SHA
-	shaInterface, exists := assistedServiceRepoMap["sha"]
+	shaInterface, exists := repoMap["sha"]
 	if !exists {
-		return "", fmt.Errorf("sha field not found in openshift/assisted-service")
+		return "", fmt.Errorf("sha field not found in %s", repoKey)
 	}
 
 	sha, ok := shaInterface.(string)
@@ -380,11 +414,138 @@ func (c *Client) ExtractAssistedServiceSHA(mceBranch, snapshotFolder string) (st
 	}
 
 	if sha == "" {
-		return "", fmt.Errorf("SHA is empty for openshift/assisted-service")
+		return "", fmt.Errorf("SHA is empty for %s", repoKey)
 	}
 
-	logger.Debug("Extracted assisted-service SHA: %s", sha)
+	logger.Debug("Extracted %s SHA: %s", componentName, sha)
 	return sha, nil
+}
+
+// extractComponentSHAWithFallback tries to find the SHA from previous snapshots with the same version.
+func (c *Client) extractComponentSHAWithFallback(mceBranch, originalSnapshot, componentName string) (string, error) {
+	// First, get the expected version from the original snapshot's build-status.yaml
+	expectedVersion, err := c.getVersionFromSnapshot(mceBranch, originalSnapshot)
+	if err != nil {
+		return "", fmt.Errorf("failed to get expected version from original snapshot: %v", err)
+	}
+
+	logger.Debug("Looking for snapshots with version %s", expectedVersion)
+
+	// Get all available snapshot folders
+	snapshots, err := c.getAllSnapshotFolders(mceBranch)
+	if err != nil {
+		return "", fmt.Errorf("failed to get snapshot folders: %v", err)
+	}
+
+	// Sort snapshots in reverse chronological order (newest first, excluding the original)
+	var candidateSnapshots []string
+	for _, snapshot := range snapshots {
+		if snapshot != originalSnapshot && snapshot < originalSnapshot {
+			candidateSnapshots = append(candidateSnapshots, snapshot)
+		}
+	}
+
+	// Sort in reverse order (newest first)
+	for i := 0; i < len(candidateSnapshots)/2; i++ {
+		j := len(candidateSnapshots) - 1 - i
+		candidateSnapshots[i], candidateSnapshots[j] = candidateSnapshots[j], candidateSnapshots[i]
+	}
+
+	// Try each candidate snapshot
+	for _, candidateSnapshot := range candidateSnapshots {
+		logger.Debug("Trying snapshot %s", candidateSnapshot)
+
+		// Check if this snapshot has the same version
+		version, err := c.getVersionFromSnapshot(mceBranch, candidateSnapshot)
+		if err != nil {
+			logger.Debug("Failed to get version from snapshot %s: %v", candidateSnapshot, err)
+			continue
+		}
+
+		if version != expectedVersion {
+			logger.Debug("Snapshot %s has different version %s, expected %s", candidateSnapshot, version, expectedVersion)
+			continue
+		}
+
+		logger.Debug("Snapshot %s has matching version %s", candidateSnapshot, version)
+
+		// Try to extract SHA from this snapshot
+		sha, err := c.extractComponentSHAFromSnapshot(mceBranch, candidateSnapshot, componentName)
+		if err != nil {
+			logger.Debug("Failed to extract SHA from snapshot %s: %v", candidateSnapshot, err)
+			continue
+		}
+
+		logger.Debug("Successfully extracted %s SHA from fallback snapshot %s: %s", componentName, candidateSnapshot, sha)
+		return sha, nil
+	}
+
+	return "", fmt.Errorf("no valid snapshots found with version %s containing down-sha.yaml", expectedVersion)
+}
+
+// getVersionFromSnapshot gets the version from build-status.yaml in a snapshot.
+func (c *Client) getVersionFromSnapshot(mceBranch, snapshotFolder string) (string, error) {
+	projectID := "acm-cicd/mce-bb2"
+	filePath := fmt.Sprintf("snapshots/%s/build-status.yaml", snapshotFolder)
+
+	file, resp, err := c.client.RepositoryFiles.GetFile(projectID, filePath, &gitlab.GetFileOptions{
+		Ref: &mceBranch,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get build-status.yaml: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to get build-status.yaml, status: %d", resp.StatusCode)
+	}
+
+	// Decode and parse
+	content, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode build-status.yaml: %w", err)
+	}
+
+	var buildStatus BuildStatus
+	if err := yaml.Unmarshal(content, &buildStatus); err != nil {
+		return "", fmt.Errorf("failed to parse build-status.yaml: %w", err)
+	}
+
+	return buildStatus.Announce.Version, nil
+}
+
+// getAllSnapshotFolders gets all snapshot folder names in a branch.
+func (c *Client) getAllSnapshotFolders(mceBranch string) ([]string, error) {
+	projectID := "acm-cicd/mce-bb2"
+	path := "snapshots"
+
+	opts := &gitlab.ListTreeOptions{
+		Path:      &path,
+		Ref:       &mceBranch,
+		Recursive: gitlab.Ptr(false),
+	}
+
+	tree, resp, err := c.client.Repositories.ListTree(projectID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots directory: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to list snapshots directory, status: %d", resp.StatusCode)
+	}
+
+	var folders []string
+	for _, item := range tree {
+		if item.Type == "tree" {
+			folders = append(folders, item.Name)
+		}
+	}
+
+	return folders, nil
+}
+
+// ExtractAssistedServiceSHA extracts the SHA for assisted-service - backward compatibility wrapper
+func (c *Client) ExtractAssistedServiceSHA(mceBranch, snapshotFolder string) (string, error) {
+	return c.ExtractComponentSHA(mceBranch, snapshotFolder, "assisted-service")
 }
 
 // convertACMToMCEVersion converts an ACM version to its corresponding MCE version.
