@@ -25,8 +25,8 @@ test_output.txt
 logs/
 *.out
 
-# Data files (may contain sensitive information)
-data/
+# Data files (may contain sensitive information) 
+# data/ TODO: remove comment when public
 *.xlsx
 *.xls
 *.csv
