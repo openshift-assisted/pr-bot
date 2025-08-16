@@ -690,27 +690,24 @@ func getMCESHA(gitlabClient *gitlab.Client, component, version string) (string, 
 	// Extract SHA from the snapshot using existing GitLab client method
 	sha, err := gitlabClient.ExtractComponentSHA(mceBranch, snapshot, component)
 	if err != nil {
-		// Check if this is a version mismatch issue
-		if strings.Contains(err.Error(), "no valid snapshots found with version") && strings.Contains(err.Error(), "containing down-sha.yaml") {
-			// Try to get the actual version from this snapshot to provide a better error
+		// Check if this is a version mismatch issue (simplified detection)
+		if strings.Contains(err.Error(), "no valid snapshots found with version") {
+			// Always try to get the actual version from this snapshot to provide a better error
 			actualVersion, versionErr := gitlabClient.GetVersionFromSnapshot(mceBranch, snapshot)
-			if versionErr == nil && actualVersion != version {
-				return "", fmt.Errorf("❌ MCE version mismatch: You requested %s, but the latest snapshot in %s branch contains %s.\n💡 Try: pr-bot -v mce %s %s", version, mceBranch, actualVersion, component, actualVersion)
-			}
-		}
-
-		// Check for component-specific error
-		if strings.Contains(err.Error(), "for component "+component) {
-			// Get the version from the error message
-			if strings.Contains(err.Error(), "no valid snapshots found with version") {
-				// Extract version from error for better message
-				actualVersion, versionErr := gitlabClient.GetVersionFromSnapshot(mceBranch, snapshot)
-				if versionErr == nil && actualVersion != version {
+			if versionErr == nil {
+				if actualVersion != version {
 					return "", fmt.Errorf("❌ MCE version mismatch: You requested %s, but the latest snapshot in %s branch contains %s.\n💡 Try: pr-bot -v mce %s %s", version, mceBranch, actualVersion, component, actualVersion)
+				} else {
+					// Same version but still failing - show the original error with context
+					return "", fmt.Errorf("❌ MCE %s error for component %s: %v\n💡 This might be a temporary GitLab issue or the component might not be available in this MCE version", version, component, err)
 				}
+			} else {
+				// Couldn't get version from snapshot, show original error with helpful context
+				return "", fmt.Errorf("❌ MCE %s error for component %s: %v\n💡 Unable to determine actual MCE version from snapshot. This might be a GitLab connectivity issue", version, component, err)
 			}
 		}
 
+		// For other types of errors, show the original error
 		return "", fmt.Errorf("failed to extract %s SHA from snapshot %s: %v", component, snapshot, err)
 	}
 
