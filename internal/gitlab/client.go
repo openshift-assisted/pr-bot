@@ -433,7 +433,7 @@ func (c *Client) extractComponentSHAFromSnapshot(mceBranch, snapshotFolder, comp
 // extractComponentSHAWithFallback tries to find the SHA from previous snapshots with the same version.
 func (c *Client) extractComponentSHAWithFallback(mceBranch, originalSnapshot, componentName string) (string, error) {
 	// First, get the expected version from the original snapshot's build-status.yaml
-	expectedVersion, err := c.getVersionFromSnapshot(mceBranch, originalSnapshot)
+	expectedVersion, err := c.GetVersionFromSnapshot(mceBranch, originalSnapshot)
 	if err != nil {
 		return "", fmt.Errorf("failed to get expected version from original snapshot: %v", err)
 	}
@@ -465,7 +465,7 @@ func (c *Client) extractComponentSHAWithFallback(mceBranch, originalSnapshot, co
 		logger.Debug("Trying snapshot %s", candidateSnapshot)
 
 		// Check if this snapshot has the same version
-		version, err := c.getVersionFromSnapshot(mceBranch, candidateSnapshot)
+		version, err := c.GetVersionFromSnapshot(mceBranch, candidateSnapshot)
 		if err != nil {
 			logger.Debug("Failed to get version from snapshot %s: %v", candidateSnapshot, err)
 			continue
@@ -492,8 +492,8 @@ func (c *Client) extractComponentSHAWithFallback(mceBranch, originalSnapshot, co
 	return "", fmt.Errorf("no valid snapshots found with version %s containing down-sha.yaml", expectedVersion)
 }
 
-// getVersionFromSnapshot gets the version from build-status.yaml in a snapshot.
-func (c *Client) getVersionFromSnapshot(mceBranch, snapshotFolder string) (string, error) {
+// GetVersionFromSnapshot gets the version from build-status.yaml in a snapshot.
+func (c *Client) GetVersionFromSnapshot(mceBranch, snapshotFolder string) (string, error) {
 	projectID := "acm-cicd/mce-bb2"
 	filePath := fmt.Sprintf("snapshots/%s/build-status.yaml", snapshotFolder)
 

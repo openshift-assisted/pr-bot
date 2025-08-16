@@ -12,7 +12,7 @@ A Go-based tool to analyze merged pull requests and determine their presence acr
 ### CLI Mode
 ```bash
 # Install latest release
-go install github.com/shay23bra/pr-bot@v0.0.5
+go install github.com/shay23bra/pr-bot@v0.1.0
 
 # Add Go bin to PATH (if needed)
 export PATH=$PATH:~/go/bin
@@ -67,7 +67,7 @@ pr-bot -server
 ### 📅 Release Management
 - **GA Status Tracking**: Analyze General Availability status by reading ACM/MCE release schedules from Excel files
 - **Release Schedule Integration**: Parse "In Progress" and "ACM MCE Completed" tabs to determine GA dates
-- **Version Comparison**: Compare MCE/GitHub versions to track changes between releases with component-specific analysis
+- **Version Comparison**: Compare MCE/GitHub versions to track changes between releases with required component-specific analysis
 
 ### 🚀 User Experience
 - **Auto-Update Notifications**: Automatically checks for newer versions and prompts users to update
@@ -361,31 +361,27 @@ pr-bot -jt MGMT-20662
 #### Version Comparison
 
 ```bash
-# Compare GitHub tag with previous version (defaults to assisted-service)
-pr-bot -v v2.40.1
-
-# Compare specific component versions
+# Compare GitHub tag with previous version for specific components
 pr-bot -v assisted-service v2.40.1
 pr-bot -v assisted-installer v2.44.0
 
-# Compare MCE versions (defaults to assisted-service)
-pr-bot -v mce 2.8.1
-
-# Compare specific MCE component versions
+# Compare MCE versions for specific components
 pr-bot -v mce assisted-service 2.8.0
 pr-bot -v mce assisted-installer 2.8.0
 ```
 
-**Component Selection**: For both regular and MCE version comparisons, you can specify which component/repository to analyze:
+**Component Selection**: For both regular and MCE version comparisons, you must specify which component/repository to analyze:
 
 **Available Components:**
-- `assisted-service` (default if not specified) - `openshift/assisted-service`
+- `assisted-service` - `openshift/assisted-service`
 - `assisted-installer` - `openshift/assisted-installer`
 - `assisted-installer-agent` - `openshift/assisted-installer-agent`
 - `assisted-installer-ui` - `openshift-assisted/assisted-installer-ui`
 
 **Regular Version Comparison**: Compares GitHub tags between different releases of the same repository.
 **MCE Version Comparison**: Compares component SHAs between MCE snapshots, allowing you to track changes specific to that component between MCE versions.
+
+**Note**: Component specification is required - there are no defaults to avoid confusion about which repository is being analyzed.
 
 ### 🤖 Server Mode (Slack Bot)
 
@@ -410,11 +406,9 @@ Once the server is running, use these slash commands in Slack:
 # Analyze JIRA ticket  
 /prbot jira MGMT-20662
 
-# Compare versions
-/prbot version v2.40.1
+# Compare versions (component required)
 /prbot version assisted-service v2.40.1
 /prbot version assisted-installer v2.44.0
-/prbot version mce 2.8.1
 /prbot version mce assisted-service 2.8.0
 /prbot version mce assisted-installer 2.8.0
 ```

@@ -99,10 +99,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nOptions:\n")
 		fmt.Fprintf(os.Stderr, "  -pr <PR_URL>      Analyze a PR across all release branches\n")
 		fmt.Fprintf(os.Stderr, "  -jt <JIRA_URL>    Analyze all PRs related to a JIRA ticket\n")
-		fmt.Fprintf(os.Stderr, "  -v <version>              Compare GitHub tag with previous version (defaults to assisted-service)\n")
-		fmt.Fprintf(os.Stderr, "  -v <component> <version>  Compare specific component version\n")
-		fmt.Fprintf(os.Stderr, "  -v mce <version>          Compare MCE version with previous version (defaults to assisted-service)\n")
-		fmt.Fprintf(os.Stderr, "  -v mce <component> <version>  Compare specific MCE component version\n")
+		fmt.Fprintf(os.Stderr, "  -v <component> <version>  Compare GitHub tag with previous version for specific component\n")
+		fmt.Fprintf(os.Stderr, "  -v mce <component> <version>  Compare MCE version with previous version for specific component\n")
 		fmt.Fprintf(os.Stderr, "  -server           Run as Slack bot server\n")
 		fmt.Fprintf(os.Stderr, "  -version          Show version and exit\n")
 		fmt.Fprintf(os.Stderr, "  -d                Enable debug logging\n")
@@ -110,10 +108,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  pr-bot -pr https://github.com/openshift/assisted-service/pull/7788\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -jt https://issues.redhat.com/browse/MGMT-20662\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -jt MGMT-20662\n")
-		fmt.Fprintf(os.Stderr, "  pr-bot -v v2.40.1\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -v assisted-service v2.40.1\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -v assisted-installer v2.44.0\n")
-		fmt.Fprintf(os.Stderr, "  pr-bot -v mce 2.8.1\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -v mce assisted-service 2.8.0\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -v mce assisted-installer 2.8.0\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -server\n")
@@ -167,8 +163,12 @@ func main() {
 				version := parts[1]
 				handleMCEVersionComparison(component, version)
 			} else {
-				// Format: "mce version" (default to assisted-service)
-				handleMCEVersionComparison("assisted-service", mceArgs)
+				// Format: "mce version" - component is required
+				fmt.Fprintf(os.Stderr, "❌ Error: Component is required for MCE version comparison\n")
+				fmt.Fprintf(os.Stderr, "Usage: pr-bot -v mce <component> <version>\n")
+				fmt.Fprintf(os.Stderr, "Available components: assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui\n")
+				fmt.Fprintf(os.Stderr, "Example: pr-bot -v mce assisted-service 2.8.1\n")
+				os.Exit(1)
 			}
 		} else if *versionFlag == "mce" && len(args) > 0 {
 			// Handle case where "mce" and other arguments are separate: -v mce component version OR -v mce version
@@ -178,9 +178,12 @@ func main() {
 				version := args[1]
 				handleMCEVersionComparison(component, version)
 			} else {
-				// Format: -v mce version (default to assisted-service)
-				version := args[0]
-				handleMCEVersionComparison("assisted-service", version)
+				// Format: -v mce version - component is required
+				fmt.Fprintf(os.Stderr, "❌ Error: Component is required for MCE version comparison\n")
+				fmt.Fprintf(os.Stderr, "Usage: pr-bot -v mce <component> <version>\n")
+				fmt.Fprintf(os.Stderr, "Available components: assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui\n")
+				fmt.Fprintf(os.Stderr, "Example: pr-bot -v mce assisted-service 2.8.1\n")
+				os.Exit(1)
 			}
 		} else if len(args) > 0 && isValidComponent(*versionFlag) {
 			// Handle case where component and version are separate arguments: -v component version
@@ -191,7 +194,11 @@ func main() {
 				handleVersionComparison(component, version)
 			} else {
 				// This shouldn't happen as we checked len(args) > 0
-				handleVersionComparison("assisted-service", *versionFlag)
+				fmt.Fprintf(os.Stderr, "❌ Error: Component is required for version comparison\n")
+				fmt.Fprintf(os.Stderr, "Usage: pr-bot -v <component> <version>\n")
+				fmt.Fprintf(os.Stderr, "Available components: assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui\n")
+				fmt.Fprintf(os.Stderr, "Example: pr-bot -v assisted-service v2.40.1\n")
+				os.Exit(1)
 			}
 		} else {
 			// Check if component is specified: "component version"
@@ -202,8 +209,12 @@ func main() {
 				version := parts[1]
 				handleVersionComparison(component, version)
 			} else {
-				// Format: -v "version" (default to assisted-service)
-				handleVersionComparison("assisted-service", *versionFlag)
+				// Format: -v "version" - component is required
+				fmt.Fprintf(os.Stderr, "❌ Error: Component is required for version comparison\n")
+				fmt.Fprintf(os.Stderr, "Usage: pr-bot -v <component> <version>\n")
+				fmt.Fprintf(os.Stderr, "Available components: assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui\n")
+				fmt.Fprintf(os.Stderr, "Example: pr-bot -v assisted-service v2.40.1\n")
+				os.Exit(1)
 			}
 		}
 		return
@@ -679,6 +690,14 @@ func getMCESHA(gitlabClient *gitlab.Client, component, version string) (string, 
 	// Extract SHA from the snapshot using existing GitLab client method
 	sha, err := gitlabClient.ExtractComponentSHA(mceBranch, snapshot, component)
 	if err != nil {
+		// Check if this is a version mismatch issue
+		if strings.Contains(err.Error(), "no valid snapshots found with version") && strings.Contains(err.Error(), "containing down-sha.yaml") {
+			// Try to get the actual version from this snapshot to provide a better error
+			actualVersion, versionErr := gitlabClient.GetVersionFromSnapshot(mceBranch, snapshot)
+			if versionErr == nil && actualVersion != version {
+				return "", fmt.Errorf("requested MCE version %s not found. Latest snapshot in %s branch contains version %s. Please use 'pr-bot -v mce %s %s' instead", version, mceBranch, actualVersion, component, actualVersion)
+			}
+		}
 		return "", fmt.Errorf("failed to extract %s SHA from snapshot %s: %v", component, snapshot, err)
 	}
 
