@@ -14,6 +14,9 @@ A Go-based tool to analyze merged pull requests and determine their presence acr
 # Install latest release
 go install github.com/shay23bra/pr-bot@v0.0.3
 
+# Add Go bin to PATH (if needed)
+export PATH=$PATH:~/go/bin
+
 # Set up environment variables via export
 export PR_BOT_GITHUB_TOKEN="your_github_token_here"
 export PR_BOT_GITLAB_TOKEN="your_gitlab_token_here"
@@ -81,6 +84,10 @@ go install github.com/shay23bra/pr-bot@v0.0.3
 
 # Or install from production branch
 go install github.com/shay23bra/pr-bot@latest
+
+# Add Go bin directory to PATH (if not already done)
+echo 'export PATH=$PATH:~/go/bin' >> ~/.bashrc
+source ~/.bashrc
 
 # Verify installation
 pr-bot -version
@@ -432,6 +439,47 @@ The update check:
 - ✅ **Fast**: 5-second timeout, won't slow you down
 - ✅ **Informative**: Shows current vs latest version and how to update
 - ✅ **Automatic**: No configuration needed
+
+## Troubleshooting
+
+### "command not found: pr-bot"
+
+This happens when `~/go/bin` is not in your PATH. The binary is installed correctly but your shell can't find it.
+
+**Fix:**
+```bash
+# Temporary fix (for current session)
+export PATH=$PATH:~/go/bin
+
+# Permanent fix (add to your shell profile)
+echo 'export PATH=$PATH:~/go/bin' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify it works
+pr-bot -version
+```
+
+### "version constraints conflict"
+
+This was fixed in v0.0.3. If you see this error, clean your module cache:
+
+```bash
+# Clear module cache and reinstall
+go clean -modcache
+go install github.com/shay23bra/pr-bot@latest
+```
+
+### Rate Limit Issues
+
+If you see `403 API rate limit exceeded`:
+
+```bash
+# Make sure you have a GitHub token set
+export PR_BOT_GITHUB_TOKEN="your_github_token_here"
+
+# Without a token, you're limited to 60 requests/hour
+# With a token, you get 5000 requests/hour
+```
 
 ## Team Deployment
 
