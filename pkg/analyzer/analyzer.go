@@ -156,13 +156,14 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 					logger.Debug("Warning: failed to get upcoming GA versions for %s: %v", branch.Name, gaErr)
 				}
 			} else if branch.Pattern == "releases/v" && a.config.Repository == "assisted-installer-ui" {
-				// For UI release branches, find the corresponding ACM/MCE versions
-				upcomingGAs = a.findACMMCEVersionsForUIRelease(branch.Version, mergedAt)
+				// TEMPORARILY DISABLED: For UI release branches, find the corresponding ACM/MCE versions
+				// TODO: Fix performance issue - this causes 1000+ API calls
+				// upcomingGAs = a.findACMMCEVersionsForUIRelease(branch.Version, mergedAt)
 			}
 
 			if found {
 				// For Version-prefixed branches (v*) and UI release branches (releases/v*), find the exact release versions
-				if branch.Pattern == "v" || branch.Pattern == "releases/v" {
+				if branch.Pattern == "v" || (branch.Pattern == "releases/v" && a.config.Repository != "assisted-installer-ui") {
 					logger.Debug("Finding exact release versions for %s (%s)", branch.Name, branch.Version)
 					foundTags, tagErr := a.githubClient.FindCommitInVersionTags(
 						a.config.Owner,
@@ -378,13 +379,14 @@ func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRI
 						logger.Debug("Warning: failed to get upcoming GA versions for related PR #%d: %v", prNumber, gaErr)
 					}
 				} else if branchInfo.Pattern == "releases/v" && a.config.Repository == "assisted-installer-ui" {
-					// For UI release branches, find the corresponding ACM/MCE versions
-					upcomingGAs = a.findACMMCEVersionsForUIRelease(branchInfo.Version, mergedAt)
+					// TEMPORARILY DISABLED: For UI release branches, find the corresponding ACM/MCE versions
+					// TODO: Fix performance issue - this causes 1000+ API calls
+					// upcomingGAs = a.findACMMCEVersionsForUIRelease(branchInfo.Version, mergedAt)
 				}
 
 				if found {
 					// For Version-prefixed branches (v*) and UI release branches (releases/v*), find the exact release versions
-					if branchInfo.Pattern == "v" || branchInfo.Pattern == "releases/v" {
+					if branchInfo.Pattern == "v" || (branchInfo.Pattern == "releases/v" && a.config.Repository != "assisted-installer-ui") {
 						foundTags, err := a.githubClient.FindCommitInVersionTags(
 							a.config.Owner,
 							a.config.Repository,

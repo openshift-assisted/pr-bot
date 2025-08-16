@@ -22,6 +22,8 @@ import (
 	"github.com/sbratsla/pr-bot/internal/jira"
 	"github.com/sbratsla/pr-bot/internal/logger"
 	"github.com/sbratsla/pr-bot/internal/models"
+	"github.com/sbratsla/pr-bot/internal/server"
+	"github.com/sbratsla/pr-bot/internal/version"
 	"github.com/sbratsla/pr-bot/pkg/analyzer"
 )
 
@@ -31,6 +33,8 @@ func main() {
 	versionFlag := flag.String("v", "", "") // Hidden from help - shown in usage examples
 	prFlag := flag.String("pr", "", "Analyze a specific PR by URL")
 	jiraTicketFlag := flag.String("jt", "", "Analyze all PRs related to a JIRA ticket")
+	serverFlag := flag.Bool("server", false, "Run as Slack bot server")
+	versionOnlyFlag := flag.Bool("version", false, "Show version and exit")
 
 	slackSearchCmd := flag.NewFlagSet("slack-search", flag.ExitOnError)
 	slackSearchOwner := slackSearchCmd.String("owner", "stolostron", "Repository owner")
@@ -50,6 +54,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -jt <JIRA_URL>    Analyze all PRs related to a JIRA ticket\n")
 		fmt.Fprintf(os.Stderr, "  -v <version>      Compare GitHub tag with previous version\n")
 		fmt.Fprintf(os.Stderr, "  -v mce <version>  Compare MCE version with previous version\n")
+		fmt.Fprintf(os.Stderr, "  -server           Run as Slack bot server\n")
+		fmt.Fprintf(os.Stderr, "  -version          Show version and exit\n")
 		fmt.Fprintf(os.Stderr, "  -d                Enable debug logging\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  ./pr-bot -pr https://github.com/openshift/assisted-service/pull/7788\n")
@@ -57,13 +63,31 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  ./pr-bot -jt MGMT-20662\n")
 		fmt.Fprintf(os.Stderr, "  ./pr-bot -v v2.40.1\n")
 		fmt.Fprintf(os.Stderr, "  ./pr-bot -v mce 2.8.1\n")
+		fmt.Fprintf(os.Stderr, "  ./pr-bot -server\n")
+		fmt.Fprintf(os.Stderr, "  ./pr-bot -version\n")
 	}
 
 	flag.Parse()
 
+	// Handle version-only flag first
+	if *versionOnlyFlag {
+		version.PrintVersion()
+		return
+	}
+
 	// Enable debug logging if requested
 	if *debugFlag {
 		logger.SetDebugMode(true)
+	}
+
+	// Check for updates (non-blocking, continues execution)
+	ctx := context.Background()
+	version.CheckForUpdates(ctx)
+
+	// Handle server mode
+	if *serverFlag {
+		startSlackServer()
+		return
 	}
 
 	args := flag.Args()
@@ -396,17 +420,13 @@ func findPreviousMCEVersion(version string, gaParser *ga.Parser) (string, error)
 		previousMinorBranch := fmt.Sprintf("mce-%d.%d", major, minor-1)
 		logger.Debug("Looking for latest snapshot in previous minor branch: %s", previousMinorBranch)
 
-		// Get the latest snapshot from the previous minor branch
+		// Try to verify the previous minor branch exists (optional verification)
 		_, err := gitlabClient.FindLatestSnapshot(previousMinorBranch)
 		if err != nil {
-			return "", fmt.Errorf("failed to find latest snapshot in %s: %w", previousMinorBranch, err)
+			logger.Debug("Warning: Could not verify GitLab branch %s exists: %v. Proceeding with Excel data lookup.", previousMinorBranch, err)
 		}
 
-		// The previous version would be the highest patch version in that branch
-		// For now, we'll estimate it based on common patterns, but ideally we'd
-		// parse the snapshot to determine the exact version
-
-		// Try to find what versions exist in that branch by looking at Excel data
+		// Find what versions exist in that branch by looking at Excel data
 		mceReleases, err := gaParser.GetAllMCEReleases()
 		if err != nil {
 			logger.Debug("Warning: failed to get MCE releases from Excel: %v", err)
@@ -1025,4 +1045,24 @@ func parseVersionNumber(version string) float64 {
 
 	// If parsing fails, return 0 (sorts first)
 	return 0.0
+}
+
+// startSlackServer starts the Slack bot server
+func startSlackServer() {
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Create and start Slack server
+	slackServer := server.NewSlackServer(cfg)
+
+	// Default port
+	port := 8080
+
+	fmt.Printf("🤖 Starting Slack bot server on port %d...\n", port)
+	if err := slackServer.Start(port); err != nil {
+		log.Fatalf("Failed to start Slack server: %v", err)
+	}
 }

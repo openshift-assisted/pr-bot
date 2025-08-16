@@ -1,24 +1,119 @@
 # pr-bot
 
-A Go-based tool to analyze merged pull requests and determine their presence across release branches. This tool helps track the deployment status of changes across different release versions.
+A Go-based tool to analyze merged pull requests and determine their presence across release branches. Available as both a **CLI tool** for individual use and a **Slack bot server** for team collaboration. This tool helps track the deployment status of changes across different release versions.
+
+## 🌿 Branch Structure
+
+- **`latest`** - Production branch (stable releases)
+- **`master`** - Development branch (active development)
+
+## 🚀 Quick Start
+
+### CLI Mode
+```bash
+# Install latest release
+go install github.com/sbratsla/pr-bot@v0.0.1
+
+# Set up environment variables in .env file
+cat > .env << EOF
+# Required tokens for all functionality
+PR_BOT_GITHUB_TOKEN=your_github_token_here
+PR_BOT_GITLAB_TOKEN=your_gitlab_token_here
+PR_BOT_JIRA_TOKEN=your_jira_token_here
+EOF
+
+# Analyze a PR
+pr-bot -pr https://github.com/openshift/assisted-service/pull/7788
+
+# Check version
+pr-bot -version
+```
+
+### Server Mode (Slack Bot)
+```bash
+# Set up all required tokens in .env file
+cat > .env << EOF
+# Required tokens for all functionality
+PR_BOT_GITHUB_TOKEN=your_github_token_here
+PR_BOT_GITLAB_TOKEN=your_gitlab_token_here
+PR_BOT_JIRA_TOKEN=your_jira_token_here
+
+# Required for Slack bot server mode
+PR_BOT_SLACK_CHANNEL=your-channel
+PR_BOT_SLACK_XOXD=xoxd-token
+PR_BOT_SLACK_XOXC=xoxc-token
+EOF
+
+# Start server
+pr-bot -server
+
+# Use in Slack
+/prbot pr https://github.com/openshift/assisted-service/pull/7788
+```
 
 ## Features
 
+### 🔧 Dual Mode Architecture
+- **CLI Tool**: Perfect for individual developers and CI/CD pipelines
+- **Slack Bot Server**: Team-friendly slash commands for collaborative analysis
+
+### 📊 Analysis Capabilities
 - **PR Analysis**: Get detailed information about merged pull requests including commit hash and merge date
-- **Release Branch Tracking**: Automatically discover and check all release branches matching a pattern (e.g., `release-ocm-*`)
-- **Version Detection**: Extract version numbers from branch names and report which versions contain the changes
+- **Release Branch Tracking**: Automatically discover and check all release branches matching patterns
+- **Version Detection**: Extract version numbers from branch names and report which versions contain changes
+- **JIRA Integration**: Analyze all PRs related to a JIRA ticket including backports
+- **MCE Validation**: Verify commits against MCE GitLab snapshots with SHA extraction
+
+### 📅 Release Management
 - **GA Status Tracking**: Analyze General Availability status by reading ACM/MCE release schedules from Excel files
-- **Release Schedule Integration**: Parse "In Progress" and "ACM MCE Completed" tabs to determine GA dates and status
-- **Slack Integration**: Search for PR-related messages in Slack channels using xoxd and xoxc tokens
+- **Release Schedule Integration**: Parse "In Progress" and "ACM MCE Completed" tabs to determine GA dates
+- **Version Comparison**: Compare MCE/GitHub versions to track changes between releases
+
+### 🚀 User Experience
+- **Auto-Update Notifications**: Automatically checks for newer versions and prompts users to update
+- **Multi-Repository Support**: Works with `assisted-service`, `assisted-installer`, `assisted-installer-agent`, and `assisted-installer-ui`
 - **Flexible Configuration**: Support for environment variables, config files, and command-line options
-- **GitHub Integration**: Uses GitHub API with authentication support for higher rate limits
+- **High Performance**: Optimized with caching and parallel processing to minimize API calls
 
 ## Installation
 
+### Option 1: Install via Go (Recommended)
+```bash
+# Install latest stable release (recommended)
+go install github.com/sbratsla/pr-bot@v0.0.1
+
+# Or install from production branch
+go install github.com/sbratsla/pr-bot@latest
+
+# Verify installation
+pr-bot -version
+```
+
+### Option 2: Download Binary
+```bash
+# Download from GitHub releases (replace VERSION with actual version)
+wget https://github.com/sbratsla/pr-bot/releases/latest/download/pr-bot-linux-amd64
+chmod +x pr-bot-linux-amd64
+mv pr-bot-linux-amd64 pr-bot
+
+# Add to PATH
+sudo mv pr-bot /usr/local/bin/
+```
+
+### Option 3: Build from Source
+```bash
+# Clone and build
+git clone https://github.com/sbratsla/pr-bot.git
+cd pr-bot
+go build -o pr-bot .
+```
+
 ### Prerequisites
 
-- Go 1.21 or later
-- **GitHub token (HIGHLY RECOMMENDED)** - Without it, you'll hit rate limits quickly
+- Go 1.21 or later (if building from source)
+- **GitHub token (REQUIRED)** - For API access
+- **GitLab token (REQUIRED)** - For MCE validation  
+- **JIRA token (REQUIRED)** - For JIRA ticket analysis
 - Excel file `data/ACM - Z Stream Release Schedule.xlsx` with release schedule data
 
 ### GitHub Token Setup
@@ -199,77 +294,213 @@ jira:
 
 ## Usage
 
-First, build the tool:
-```bash
-go build -o pr-bot
-```
+### 🖥️ CLI Mode
 
-### Basic Usage
+The CLI tool automatically checks for updates on startup and provides comprehensive PR analysis.
 
-Analyze a merged PR from any supported repository:
+#### Basic Commands
 
 ```bash
-# Analyze a PR from assisted-service
-./pr-bot -pr https://github.com/openshift/assisted-service/pull/1234
+# Show version and check for updates
+pr-bot -version
 
-# Analyze a PR from assisted-installer
-./pr-bot -pr https://github.com/openshift/assisted-installer/pull/100
+# Show help
+pr-bot
 
-# Analyze a PR from assisted-installer-agent
-./pr-bot -pr https://github.com/openshift/assisted-installer-agent/pull/200
-
-# Analyze a PR from assisted-installer-ui
-./pr-bot -pr https://github.com/openshift-assisted/assisted-installer-ui/pull/2991
+# Enable debug logging for any command
+pr-bot -d -pr <PR_URL>
 ```
 
-**Supported Repositories:**
+#### PR Analysis
+
+Analyze merged PRs from any supported repository:
+
+```bash
+# Analyze a PR (auto-detects repository)
+pr-bot -pr https://github.com/openshift/assisted-service/pull/1234
+pr-bot -pr https://github.com/openshift/assisted-installer/pull/100
+pr-bot -pr https://github.com/openshift/assisted-installer-agent/pull/200
+pr-bot -pr https://github.com/openshift-assisted/assisted-installer-ui/pull/2991
+
+# Just use the PR number if you're in the right repo context
+pr-bot -pr 1234
+```
+
+#### JIRA Ticket Analysis
+
+Analyze all PRs related to a JIRA ticket (finds backports automatically):
+
+```bash
+# Full URL
+pr-bot -jt https://issues.redhat.com/browse/MGMT-20662
+
+# Just ticket ID
+pr-bot -jt MGMT-20662
+```
+
+#### Version Comparison
+
+```bash
+# Compare GitHub tag with previous version
+pr-bot -v v2.40.1
+
+# Compare MCE versions  
+pr-bot -v mce 2.8.1
+```
+
+### 🤖 Server Mode (Slack Bot)
+
+Start the server to enable Slack slash commands:
+
+```bash
+# Start server (default port 8080)
+pr-bot -server
+```
+
+#### Slack Commands
+
+Once the server is running, use these slash commands in Slack:
+
+```bash
+# Show help
+/prbot help
+
+# Analyze a PR
+/prbot pr https://github.com/openshift/assisted-service/pull/1234
+
+# Analyze JIRA ticket  
+/prbot jira MGMT-20662
+
+# Compare versions
+/prbot version v2.40.1
+/prbot version mce 2.8.1
+```
+
+#### Slack App Setup
+
+1. **Create Slack App**: Go to [Slack Apps](https://api.slack.com/apps) and create a new app
+2. **Add Slash Command**: 
+   - Command: `/prbot`
+   - Request URL: `https://your-server.com/slack/commands`
+   - Description: "Analyze PRs and JIRA tickets"
+3. **Install App**: Install to your workspace
+4. **Configure Tokens**: Set environment variables with your app's tokens
+
+### 📋 Supported Repositories
+
 - `openshift/assisted-service`
-- `openshift/assisted-installer`
+- `openshift/assisted-installer` 
 - `openshift/assisted-installer-agent`
 - `openshift-assisted/assisted-installer-ui`
 
-**Supported Components for MCE Validation:**
-- `assisted-service` - Direct SHA extraction from down-sha.yaml
-- `assisted-installer` - Direct SHA extraction from down-sha.yaml  
-- `assisted-installer-agent` - Direct SHA extraction from down-sha.yaml
-- `assisted-installer-ui` - Version extraction via stolostron/console → frontend/package.json → @openshift-assisted/ui-lib
+### 🔧 MCE Validation Components
 
-The tool automatically detects the repository from the PR URL and performs the same analysis (GA status, MCE validation, etc.) for all supported repositories.
+- **assisted-service**: Direct SHA extraction from `down-sha.yaml`
+- **assisted-installer**: Direct SHA extraction from `down-sha.yaml`
+- **assisted-installer-agent**: Direct SHA extraction from `down-sha.yaml`  
+- **assisted-installer-ui**: Multi-step version extraction via `stolostron/console` → `frontend/package.json` → `@openshift-assisted/ui-lib`
 
-### Version Comparison
+## Auto-Update Feature
 
-Compare a GitHub tag with its previous version:
-
-```bash
-./pr-bot -v v2.40.1
-```
-
-Compare MCE versions:
+The tool automatically checks for updates when running CLI commands:
 
 ```bash
-./pr-bot -v mce 2.8.1
+# Example output when a new version is available
+$ pr-bot -pr https://github.com/openshift/assisted-service/pull/1234
+
+⚠️  A newer version is available: 0.1.0 (current: 0.0.1)
+📦 Update with: go install github.com/sbratsla/pr-bot@latest
+🔗 Or download from: https://github.com/sbratsla/pr-bot/releases/latest
+
+# Then it continues with normal execution...
 ```
 
-### JIRA Ticket Analysis
+The update check:
+- ✅ **Non-blocking**: Never fails your command if update check fails
+- ✅ **Fast**: 5-second timeout, won't slow you down
+- ✅ **Informative**: Shows current vs latest version and how to update
+- ✅ **Automatic**: No configuration needed
 
-Analyze all PRs related to a JIRA ticket (including cloned tickets):
+## Team Deployment
+
+### For CLI Distribution
+
+1. **Create installation script** for your team:
 
 ```bash
-./pr-bot -jt https://issues.redhat.com/browse/MGMT-20662
+#!/bin/bash
+# install-pr-bot.sh
+
+echo "🚀 Installing pr-bot..."
+
+# Install latest version
+go install github.com/sbratsla/pr-bot@latest
+
+# Verify installation
+pr-bot -version
+
+echo "✅ Installation complete!"
+echo "📋 Next steps:"
+echo "1. Set up your tokens in .env file:"
+echo "   cat > .env << EOF"
+echo "   PR_BOT_GITHUB_TOKEN=your_github_token_here"
+echo "   PR_BOT_GITLAB_TOKEN=your_gitlab_token_here"
+echo "   PR_BOT_JIRA_TOKEN=your_jira_token_here"
+echo "   EOF"
+echo "2. Test with: pr-bot -pr <PR_URL>"
 ```
 
-Or use just the ticket ID:
+### For Server Deployment
 
-```bash
-./pr-bot -jt MGMT-20662
+1. **Docker deployment** (recommended):
+
+```dockerfile
+# Dockerfile
+FROM golang:1.21-alpine AS builder
+WORKDIR /app
+COPY . .
+RUN go build -o pr-bot .
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+WORKDIR /root/
+COPY --from=builder /app/pr-bot .
+COPY --from=builder /app/VERSION .
+COPY --from=builder /app/data ./data
+EXPOSE 8080
+CMD ["./pr-bot", "-server"]
 ```
 
-This will:
-- Find all cloned JIRA tickets related to the main ticket
-- Extract all GitHub PR URLs from all related tickets (supports assisted-service, assisted-installer, and assisted-installer-agent repositories)
-- Analyze each PR across all release branches (with repository-specific context)
-- Provide a combined analysis showing all branches affected across all PRs
-- Show comprehensive release status information for each repository
+2. **Kubernetes deployment**:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pr-bot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pr-bot
+  template:
+    metadata:
+      labels:
+        app: pr-bot
+    spec:
+      containers:
+      - name: pr-bot
+        image: your-registry/pr-bot:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PR_BOT_GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: pr-bot-secrets
+              key: github-token
+        # ... other environment variables
+```
 
 ### With Debug Output
 
