@@ -99,8 +99,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nOptions:\n")
 		fmt.Fprintf(os.Stderr, "  -pr <PR_URL>      Analyze a PR across all release branches\n")
 		fmt.Fprintf(os.Stderr, "  -jt <JIRA_URL>    Analyze all PRs related to a JIRA ticket\n")
-		fmt.Fprintf(os.Stderr, "  -v <version>      Compare GitHub tag with previous version\n")
-		fmt.Fprintf(os.Stderr, "  -v mce <version>  Compare MCE version with previous version\n")
+		fmt.Fprintf(os.Stderr, "  -v <version>              Compare GitHub tag with previous version (defaults to assisted-service)\n")
+		fmt.Fprintf(os.Stderr, "  -v <component> <version>  Compare specific component version\n")
+		fmt.Fprintf(os.Stderr, "  -v mce <version>          Compare MCE version with previous version (defaults to assisted-service)\n")
+		fmt.Fprintf(os.Stderr, "  -v mce <component> <version>  Compare specific MCE component version\n")
 		fmt.Fprintf(os.Stderr, "  -server           Run as Slack bot server\n")
 		fmt.Fprintf(os.Stderr, "  -version          Show version and exit\n")
 		fmt.Fprintf(os.Stderr, "  -d                Enable debug logging\n")
@@ -109,7 +111,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  pr-bot -jt https://issues.redhat.com/browse/MGMT-20662\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -jt MGMT-20662\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -v v2.40.1\n")
+		fmt.Fprintf(os.Stderr, "  pr-bot -v assisted-service v2.40.1\n")
+		fmt.Fprintf(os.Stderr, "  pr-bot -v assisted-installer v2.44.0\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -v mce 2.8.1\n")
+		fmt.Fprintf(os.Stderr, "  pr-bot -v mce assisted-service 2.8.0\n")
+		fmt.Fprintf(os.Stderr, "  pr-bot -v mce assisted-installer 2.8.0\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -server\n")
 		fmt.Fprintf(os.Stderr, "  pr-bot -version\n")
 	}
@@ -148,17 +154,57 @@ func main() {
 
 	// Handle version comparison mode
 	if *versionFlag != "" {
-		// Check if this is MCE version comparison (format: "mce X.Y.Z")
+		// Check if this is MCE version comparison (format: "mce X.Y.Z" or "mce component X.Y.Z")
 		if strings.HasPrefix(strings.ToLower(*versionFlag), "mce ") {
-			mceVersion := strings.TrimPrefix(strings.ToLower(*versionFlag), "mce ")
-			mceVersion = strings.TrimSpace(mceVersion)
-			handleMCEVersionComparison(mceVersion)
+			mceArgs := strings.TrimPrefix(strings.ToLower(*versionFlag), "mce ")
+			mceArgs = strings.TrimSpace(mceArgs)
+
+			// Check if component is specified in the string: "mce assisted-service 2.8.0"
+			parts := strings.Fields(mceArgs)
+			if len(parts) == 2 {
+				// Format: "mce component version"
+				component := parts[0]
+				version := parts[1]
+				handleMCEVersionComparison(component, version)
+			} else {
+				// Format: "mce version" (default to assisted-service)
+				handleMCEVersionComparison("assisted-service", mceArgs)
+			}
 		} else if *versionFlag == "mce" && len(args) > 0 {
-			// Handle case where "mce" and version are separate arguments: -v mce 2.8.1
-			mceVersion := args[0]
-			handleMCEVersionComparison(mceVersion)
+			// Handle case where "mce" and other arguments are separate: -v mce component version OR -v mce version
+			if len(args) >= 2 {
+				// Format: -v mce component version
+				component := args[0]
+				version := args[1]
+				handleMCEVersionComparison(component, version)
+			} else {
+				// Format: -v mce version (default to assisted-service)
+				version := args[0]
+				handleMCEVersionComparison("assisted-service", version)
+			}
+		} else if len(args) > 0 && isValidComponent(*versionFlag) {
+			// Handle case where component and version are separate arguments: -v component version
+			if len(args) >= 1 {
+				// Format: -v component version
+				component := *versionFlag
+				version := args[0]
+				handleVersionComparison(component, version)
+			} else {
+				// This shouldn't happen as we checked len(args) > 0
+				handleVersionComparison("assisted-service", *versionFlag)
+			}
 		} else {
-			handleVersionComparison(*versionFlag)
+			// Check if component is specified: "component version"
+			parts := strings.Fields(*versionFlag)
+			if len(parts) == 2 {
+				// Format: -v "component version"
+				component := parts[0]
+				version := parts[1]
+				handleVersionComparison(component, version)
+			} else {
+				// Format: -v "version" (default to assisted-service)
+				handleVersionComparison("assisted-service", *versionFlag)
+			}
 		}
 		return
 	}
@@ -220,12 +266,51 @@ func main() {
 	os.Exit(1)
 }
 
+// isValidComponent checks if a string is a valid component name
+func isValidComponent(component string) bool {
+	validComponents := []string{
+		"assisted-service",
+		"assisted-installer",
+		"assisted-installer-agent",
+		"assisted-installer-ui",
+	}
+
+	for _, valid := range validComponents {
+		if component == valid {
+			return true
+		}
+	}
+	return false
+}
+
+// getRepositoryForComponent maps component names to owner/repository combinations
+func getRepositoryForComponent(component string) (owner, repo string) {
+	switch component {
+	case "assisted-service":
+		return "openshift", "assisted-service"
+	case "assisted-installer":
+		return "openshift", "assisted-installer"
+	case "assisted-installer-agent":
+		return "openshift", "assisted-installer-agent"
+	case "assisted-installer-ui":
+		return "openshift-assisted", "assisted-installer-ui"
+	default:
+		// Default to assisted-service for unknown components
+		return "openshift", "assisted-service"
+	}
+}
+
 // handleVersionComparison compares a version with its previous release
-func handleVersionComparison(version string) {
+func handleVersionComparison(component, version string) {
 	fmt.Printf("=== Version Comparison ===\n")
 	fmt.Printf("Target version: %s\n", version)
+	fmt.Printf("Component: %s\n", component)
 
-	// Load configuration to get default repository
+	// Get repository information for the component
+	owner, repo := getRepositoryForComponent(component)
+	fmt.Printf("Repository: %s/%s\n", owner, repo)
+
+	// Load configuration for GitHub token
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
@@ -237,14 +322,14 @@ func handleVersionComparison(version string) {
 
 	// First, check if the target version tag exists
 	fmt.Printf("Checking if %s tag exists...\n", version)
-	exists, err := githubClient.TagExists(cfg.Owner, cfg.Repository, version)
+	exists, err := githubClient.TagExists(owner, repo, version)
 	if err != nil {
 		log.Fatalf("Failed to check if tag exists: %v", err)
 	}
 
 	if !exists {
 		fmt.Printf("❌ Error: No release found with tag '%s'\n", version)
-		fmt.Printf("Repository: %s/%s\n", cfg.Owner, cfg.Repository)
+		fmt.Printf("Repository: %s/%s\n", owner, repo)
 		return
 	}
 
@@ -252,7 +337,7 @@ func handleVersionComparison(version string) {
 
 	// Find previous version
 	fmt.Printf("Finding nearest previous version...\n")
-	previousVersion, err := githubClient.FindPreviousVersion(cfg.Owner, cfg.Repository, version)
+	previousVersion, err := githubClient.FindPreviousVersion(owner, repo, version)
 	if err != nil {
 		log.Fatalf("Failed to find previous version: %v", err)
 	}
@@ -270,7 +355,7 @@ func handleVersionComparison(version string) {
 	fmt.Printf("Comparing %s...%s\n\n", previousVersion, version)
 
 	// Get commits between versions
-	commits, err := githubClient.GetCommitsBetweenTags(cfg.Owner, cfg.Repository, previousVersion, version)
+	commits, err := githubClient.GetCommitsBetweenTags(owner, repo, previousVersion, version)
 	if err != nil {
 		log.Fatalf("Failed to get commits between versions: %v", err)
 	}
@@ -330,9 +415,10 @@ func parseVersionForDisplay(version string) (major, minor, patch int, err error)
 }
 
 // handleMCEVersionComparison compares an MCE version with its previous release using GitLab snapshots
-func handleMCEVersionComparison(version string) {
+func handleMCEVersionComparison(component, version string) {
 	fmt.Printf("=== MCE Version Comparison ===\n")
 	fmt.Printf("Target MCE version: %s\n", version)
+	fmt.Printf("Component: %s\n", component)
 
 	// Load configuration
 	cfg, err := config.Load()
@@ -363,26 +449,26 @@ func handleMCEVersionComparison(version string) {
 	fmt.Printf("Previous MCE version: %s\n", previousVersion)
 
 	// Get SHA for target version
-	targetSHA, err := getMCESHA(gitlabClient, version)
+	targetSHA, err := getMCESHA(gitlabClient, component, version)
 	if err != nil {
 		log.Fatalf("Failed to get SHA for MCE %s: %v", version, err)
 	}
 
 	// Get SHA for previous version
-	previousSHA, err := getMCESHA(gitlabClient, previousVersion)
+	previousSHA, err := getMCESHA(gitlabClient, component, previousVersion)
 	if err != nil {
 		log.Fatalf("Failed to get SHA for MCE %s: %v", previousVersion, err)
 	}
 
-	fmt.Printf("MCE %s assisted-service SHA: %s\n", version, targetSHA[:8])
-	fmt.Printf("MCE %s assisted-service SHA: %s\n", previousVersion, previousSHA[:8])
+	fmt.Printf("MCE %s %s SHA: %s\n", version, component, targetSHA[:8])
+	fmt.Printf("MCE %s %s SHA: %s\n", previousVersion, component, previousSHA[:8])
 
 	// Check if SHAs are the same - no need to compare if identical
 	if targetSHA == previousSHA {
 		fmt.Printf("\nNo commits found between %s and %s (same SHA)\n", previousSHA[:8], targetSHA[:8])
 		fmt.Printf("\n=== Changes in MCE %s ===\n", version)
 		fmt.Printf("Total commits: 0\n\n")
-		fmt.Printf("Both versions use the same assisted-service SHA, indicating no changes between them.\n")
+		fmt.Printf("Both versions use the same %s SHA, indicating no changes between them.\n", component)
 		return
 	}
 
@@ -573,8 +659,8 @@ func compareMCEVersions(v1, v2 string) int {
 	return 0 // versions are equal
 }
 
-// getMCESHA extracts the assisted-service SHA from MCE snapshot for given version
-func getMCESHA(gitlabClient *gitlab.Client, version string) (string, error) {
+// getMCESHA extracts the component SHA from MCE snapshot for given version
+func getMCESHA(gitlabClient *gitlab.Client, component, version string) (string, error) {
 	// Calculate MCE branch (e.g., 2.8.1 -> mce-2.8)
 	parts := strings.Split(version, ".")
 	if len(parts) < 2 {
@@ -591,9 +677,9 @@ func getMCESHA(gitlabClient *gitlab.Client, version string) (string, error) {
 	}
 
 	// Extract SHA from the snapshot using existing GitLab client method
-	sha, err := gitlabClient.ExtractAssistedServiceSHA(mceBranch, snapshot)
+	sha, err := gitlabClient.ExtractComponentSHA(mceBranch, snapshot, component)
 	if err != nil {
-		return "", fmt.Errorf("failed to extract SHA from snapshot %s: %v", snapshot, err)
+		return "", fmt.Errorf("failed to extract %s SHA from snapshot %s: %v", component, snapshot, err)
 	}
 
 	return sha, nil
