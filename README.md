@@ -12,15 +12,12 @@ A Go-based tool to analyze merged pull requests and determine their presence acr
 ### CLI Mode
 ```bash
 # Install latest release
-go install github.com/sbratsla/pr-bot@v0.0.1
+go install github.com/sbratsla/pr-bot@v0.0.2
 
-# Set up environment variables in .env file
-cat > .env << EOF
-# Required tokens for all functionality
-PR_BOT_GITHUB_TOKEN=your_github_token_here
-PR_BOT_GITLAB_TOKEN=your_gitlab_token_here
-PR_BOT_JIRA_TOKEN=your_jira_token_here
-EOF
+# Set up environment variables via export
+export PR_BOT_GITHUB_TOKEN="your_github_token_here"
+export PR_BOT_GITLAB_TOKEN="your_gitlab_token_here"
+export PR_BOT_JIRA_TOKEN="your_jira_token_here"
 
 # Analyze a PR
 pr-bot -pr https://github.com/openshift/assisted-service/pull/7788
@@ -80,7 +77,7 @@ pr-bot -server
 ### Option 1: Install via Go (Recommended)
 ```bash
 # Install latest stable release (recommended)
-go install github.com/sbratsla/pr-bot@v0.0.1
+go install github.com/sbratsla/pr-bot@v0.0.2
 
 # Or install from production branch
 go install github.com/sbratsla/pr-bot@latest
@@ -124,9 +121,14 @@ go build -o pr-bot .
 4. Select scopes: `public_repo` (for public repos) or `repo` (for private repos)
 5. Copy the generated token
 6. Set it as an environment variable:
-   ```bash
-   export PR_BOT_GITHUB_TOKEN="your_token_here"
-   ```
+   - **For CLI usage:**
+     ```bash
+     export PR_BOT_GITHUB_TOKEN="your_token_here"
+     ```
+   - **For Slack server usage (add to .env file):**
+     ```bash
+     echo "PR_BOT_GITHUB_TOKEN=your_token_here" >> .env
+     ```
 
 ⚠️ **Important**: Without a GitHub token, you're limited to 60 requests per hour and will get rate limited quickly when analyzing multiple branches.
 
@@ -142,11 +144,11 @@ For Slack integration, you'll need browser tokens (xoxc and xoxd):
    - Find the `Authorization` header in the requests
    - Copy the token values (they start with `xoxc-` and `xoxd-`)
 
-2. **Set them as environment variables**:
+2. **Set them in .env file** (only needed for server mode):
    ```bash
-   export PR_BOT_SLACK_XOXD="xoxd-your-browser-token-here"
-   export PR_BOT_SLACK_XOXC="xoxc-your-browser-token-here"
-   export PR_BOT_SLACK_CHANNEL="team-acm-downstream-notifcation"
+   echo "PR_BOT_SLACK_XOXD=xoxd-your-browser-token-here" >> .env
+   echo "PR_BOT_SLACK_XOXC=xoxc-your-browser-token-here" >> .env
+   echo "PR_BOT_SLACK_CHANNEL=team-acm-downstream-notifcation" >> .env
    ```
 
 **Important Notes:**
@@ -167,9 +169,14 @@ For JIRA ticket analysis, you'll need a JIRA API token:
    - Copy the generated token
 
 2. **Set as environment variable**:
-   ```bash
-   export PR_BOT_JIRA_TOKEN="your-jira-token-here"
-   ```
+   - **For CLI usage:**
+     ```bash
+     export PR_BOT_JIRA_TOKEN="your-jira-token-here"
+     ```
+   - **For Slack server usage (add to .env file):**
+     ```bash
+     echo "PR_BOT_JIRA_TOKEN=your-jira-token-here" >> .env
+     ```
 
 **Important Notes:**
 - Required only if you want to use the `-jt` flag for JIRA ticket analysis
@@ -189,9 +196,14 @@ For MCE snapshot validation (used in PR analysis and version comparison), you'll
    - Copy the generated token
 
 2. **Set as environment variable**:
-   ```bash
-   export PR_BOT_GITLAB_TOKEN="your-gitlab-token-here"
-   ```
+   - **For CLI usage:**
+     ```bash
+     export PR_BOT_GITLAB_TOKEN="your-gitlab-token-here"
+     ```
+   - **For Slack server usage (add to .env file):**
+     ```bash
+     echo "PR_BOT_GITLAB_TOKEN=your-gitlab-token-here" >> .env
+     ```
 
 **Important Notes:**
 - Required for MCE snapshot validation (SHA extraction from down-sha.yaml)
@@ -441,12 +453,10 @@ pr-bot -version
 
 echo "✅ Installation complete!"
 echo "📋 Next steps:"
-echo "1. Set up your tokens in .env file:"
-echo "   cat > .env << EOF"
-echo "   PR_BOT_GITHUB_TOKEN=your_github_token_here"
-echo "   PR_BOT_GITLAB_TOKEN=your_gitlab_token_here"
-echo "   PR_BOT_JIRA_TOKEN=your_jira_token_here"
-echo "   EOF"
+echo "1. Set up your tokens via export:"
+echo "   export PR_BOT_GITHUB_TOKEN='your_github_token_here'"
+echo "   export PR_BOT_GITLAB_TOKEN='your_gitlab_token_here'"
+echo "   export PR_BOT_JIRA_TOKEN='your_jira_token_here'"
 echo "2. Test with: pr-bot -pr <PR_URL>"
 ```
 
