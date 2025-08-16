@@ -489,7 +489,7 @@ func (c *Client) extractComponentSHAWithFallback(mceBranch, originalSnapshot, co
 		return sha, nil
 	}
 
-	return "", fmt.Errorf("no valid snapshots found with version %s containing down-sha.yaml", expectedVersion)
+	return "", fmt.Errorf("no valid snapshots found with version %s containing down-sha.yaml for component %s", expectedVersion, componentName)
 }
 
 // GetVersionFromSnapshot gets the version from build-status.yaml in a snapshot.

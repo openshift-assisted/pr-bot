@@ -695,9 +695,22 @@ func getMCESHA(gitlabClient *gitlab.Client, component, version string) (string, 
 			// Try to get the actual version from this snapshot to provide a better error
 			actualVersion, versionErr := gitlabClient.GetVersionFromSnapshot(mceBranch, snapshot)
 			if versionErr == nil && actualVersion != version {
-				return "", fmt.Errorf("requested MCE version %s not found. Latest snapshot in %s branch contains version %s. Please use 'pr-bot -v mce %s %s' instead", version, mceBranch, actualVersion, component, actualVersion)
+				return "", fmt.Errorf("❌ MCE version mismatch: You requested %s, but the latest snapshot in %s branch contains %s.\n💡 Try: pr-bot -v mce %s %s", version, mceBranch, actualVersion, component, actualVersion)
 			}
 		}
+
+		// Check for component-specific error
+		if strings.Contains(err.Error(), "for component "+component) {
+			// Get the version from the error message
+			if strings.Contains(err.Error(), "no valid snapshots found with version") {
+				// Extract version from error for better message
+				actualVersion, versionErr := gitlabClient.GetVersionFromSnapshot(mceBranch, snapshot)
+				if versionErr == nil && actualVersion != version {
+					return "", fmt.Errorf("❌ MCE version mismatch: You requested %s, but the latest snapshot in %s branch contains %s.\n💡 Try: pr-bot -v mce %s %s", version, mceBranch, actualVersion, component, actualVersion)
+				}
+			}
+		}
+
 		return "", fmt.Errorf("failed to extract %s SHA from snapshot %s: %v", component, snapshot, err)
 	}
 
