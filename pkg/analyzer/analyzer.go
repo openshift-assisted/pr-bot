@@ -155,6 +155,9 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 				if gaErr != nil {
 					logger.Debug("Warning: failed to get upcoming GA versions for %s: %v", branch.Name, gaErr)
 				}
+			} else if branch.Pattern == "releases/v" && a.config.Repository == "assisted-installer-ui" {
+				// For UI release branches, find the corresponding ACM/MCE versions
+				upcomingGAs = a.findACMMCEVersionsForUIRelease(branch.Version, mergedAt)
 			}
 
 			if found {
@@ -181,7 +184,7 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 
 				// Perform MCE snapshot validation if GitLab client is available and not all GAs are in future
 				// Only validate if the PR is actually in this branch
-				if a.gitlabClient != nil && len(upcomingGAs) > 0 && branch.Pattern == "release-ocm-" {
+				if a.gitlabClient != nil && len(upcomingGAs) > 0 && (branch.Pattern == "release-ocm-" || (branch.Pattern == "releases/v" && a.config.Repository == "assisted-installer-ui")) {
 					// Check if all GA dates are in the future
 					allGAsInFuture := true
 					now := time.Now()
@@ -374,6 +377,9 @@ func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRI
 					if gaErr != nil {
 						logger.Debug("Warning: failed to get upcoming GA versions for related PR #%d: %v", prNumber, gaErr)
 					}
+				} else if branchInfo.Pattern == "releases/v" && a.config.Repository == "assisted-installer-ui" {
+					// For UI release branches, find the corresponding ACM/MCE versions
+					upcomingGAs = a.findACMMCEVersionsForUIRelease(branchInfo.Version, mergedAt)
 				}
 
 				if found {
@@ -917,6 +923,119 @@ func (a *Analyzer) performMCEValidation(upcomingGAs []models.UpcomingGA, prCommi
 
 	logger.Debug("Completed MCE validation for all GAs")
 	return validatedGAs
+}
+
+// findACMMCEVersionsForUIRelease finds ACM/MCE versions that contain a specific UI version.
+func (a *Analyzer) findACMMCEVersionsForUIRelease(uiVersion string, mergedAt *time.Time) []models.UpcomingGA {
+	if a.gitlabClient == nil {
+		logger.Debug("No GitLab client available for UI version lookup")
+		return nil
+	}
+
+	logger.Debug("Finding ACM/MCE versions containing UI version %s", uiVersion)
+
+	// Get all MCE releases
+	allReleases, err := a.gaParser.GetAllMCEReleases()
+	if err != nil {
+		logger.Debug("Failed to get MCE releases: %v", err)
+		return nil
+	}
+
+	var matchingVersions []models.UpcomingGA
+
+	// Only check recent releases (within last 12 months) to avoid excessive API calls
+	now := time.Now()
+	cutoffDate := now.AddDate(-1, 0, 0) // 12 months ago
+
+	logger.Debug("Limiting search to MCE releases after %s", cutoffDate.Format("2006-01-02"))
+
+	// Search through recent MCE versions to find matches
+	for _, release := range allReleases {
+		// Skip old releases to reduce API calls
+		if release.GADate == nil || release.GADate.Before(cutoffDate) {
+			continue
+		}
+
+		// Try both ACM and MCE versions
+		if release.ACMVersion != "" {
+			logger.Debug("Checking ACM version %s for UI version %s", release.ACMVersion, uiVersion)
+			if a.checkUIVersionInMCERelease("ACM", release.ACMVersion, release.GADate, uiVersion) {
+				matchingVersions = append(matchingVersions, models.UpcomingGA{
+					Product: "ACM",
+					Version: release.ACMVersion,
+					GADate:  release.GADate,
+				})
+			}
+		}
+
+		if release.MCEVersion != "" {
+			logger.Debug("Checking MCE version %s for UI version %s", release.MCEVersion, uiVersion)
+			if a.checkUIVersionInMCERelease("MCE", release.MCEVersion, release.GADate, uiVersion) {
+				matchingVersions = append(matchingVersions, models.UpcomingGA{
+					Product: "MCE",
+					Version: release.MCEVersion,
+					GADate:  release.GADate,
+				})
+			}
+		}
+	}
+
+	logger.Debug("Found %d matching ACM/MCE versions for UI version %s", len(matchingVersions), uiVersion)
+
+	// If no matches found, create a placeholder indicating the search was performed
+	if len(matchingVersions) == 0 {
+		logger.Debug("No MCE releases found containing UI version %s - this may be a newer version not yet in any MCE release", uiVersion)
+		// Return a placeholder to show that we looked but didn't find it
+		return []models.UpcomingGA{
+			{
+				Product: "UI",
+				Version: fmt.Sprintf("%s not yet in released ACM/MCE versions", uiVersion),
+				GADate:  nil,
+			},
+		}
+	}
+
+	return matchingVersions
+}
+
+// checkUIVersionInMCERelease checks if a specific UI version exists in an MCE release.
+func (a *Analyzer) checkUIVersionInMCERelease(product, version string, gaDate *time.Time, targetUIVersion string) bool {
+	if gaDate == nil {
+		return false
+	}
+
+	// Only check released versions to avoid unnecessary API calls
+	now := time.Now()
+	if gaDate.After(now) {
+		logger.Debug("Skipping future release %s %s", product, version)
+		return false
+	}
+
+	logger.Debug("Extracting UI version from %s %s", product, version)
+
+	// Use MCE validation logic to extract UI version from snapshot
+	validation, err := a.gitlabClient.ValidateMCESnapshotForComponent(product, version, gaDate, "", "assisted-installer-ui")
+	if err != nil {
+		logger.Debug("Failed to validate MCE snapshot for %s %s: %v", product, version, err)
+		return false
+	}
+
+	if validation == nil || !validation.ValidationSuccess {
+		logger.Debug("MCE validation failed for %s %s", product, version)
+		return false
+	}
+
+	// The validation returns the UI version in AssistedServiceSHA field
+	extractedUIVersion := validation.AssistedServiceSHA
+
+	// Clean up version strings for comparison
+	cleanTarget := strings.TrimPrefix(targetUIVersion, "v")
+	cleanExtracted := strings.TrimPrefix(extractedUIVersion, "v")
+
+	matches := cleanTarget == cleanExtracted
+	logger.Debug("UI version comparison: target=%s, extracted=%s, matches=%v", cleanTarget, cleanExtracted, matches)
+
+	return matches
 }
 
 // comparePRCommitWithSnapshot compares if PR commit is before the snapshot commit.
