@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sbratsla/pr-bot/internal/github"
-	"github.com/sbratsla/pr-bot/internal/logger"
-	"github.com/sbratsla/pr-bot/internal/models"
+	"github.com/shay23bra/pr-bot/internal/github"
+	"github.com/shay23bra/pr-bot/internal/logger"
+	"github.com/shay23bra/pr-bot/internal/models"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
 	"gopkg.in/yaml.v2"
 )

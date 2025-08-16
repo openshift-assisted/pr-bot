@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sbratsla/pr-bot/internal/logger"
+	"github.com/shay23bra/pr-bot/internal/logger"
 )
 
 // Client represents a Slack API client.

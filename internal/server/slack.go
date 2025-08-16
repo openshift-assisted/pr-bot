@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sbratsla/pr-bot/internal/jira"
-	"github.com/sbratsla/pr-bot/internal/logger"
-	"github.com/sbratsla/pr-bot/internal/models"
-	"github.com/sbratsla/pr-bot/pkg/analyzer"
+	"github.com/shay23bra/pr-bot/internal/jira"
+	"github.com/shay23bra/pr-bot/internal/logger"
+	"github.com/shay23bra/pr-bot/internal/models"
+	"github.com/shay23bra/pr-bot/pkg/analyzer"
 )
 
 // SlackServer handles Slack bot requests
@@ -196,11 +196,11 @@ func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult) 
 	response.WriteString(fmt.Sprintf("📝 %s\n", result.PR.Title))
 	response.WriteString(fmt.Sprintf("🔨 Merged to `%s` at %s\n\n", result.PR.MergedInto, models.FormatDate(result.PR.MergedAt)))
 
-		if len(result.ReleaseBranches) == 0 {
+	if len(result.ReleaseBranches) == 0 {
 		response.WriteString("❌ No release branches found containing this PR\n")
 		return response.String()
 	}
-	
+
 	// Group branches by pattern
 	branchGroups := make(map[string][]models.BranchPresence)
 	for _, branch := range result.ReleaseBranches {

@@ -1,4 +1,4 @@
-module github.com/sbratsla/pr-bot
+module github.com/shay23bra/pr-bot
 
 go 1.23.0
 

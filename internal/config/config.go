@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
-	"github.com/sbratsla/pr-bot/internal/models"
+	"github.com/shay23bra/pr-bot/internal/models"
 	"github.com/spf13/viper"
 )
 

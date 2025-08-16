@@ -11,7 +11,7 @@ import (
 	"strconv"
 
 	"github.com/google/go-github/v57/github"
-	"github.com/sbratsla/pr-bot/internal/models"
+	"github.com/shay23bra/pr-bot/internal/models"
 	"golang.org/x/oauth2"
 )
 

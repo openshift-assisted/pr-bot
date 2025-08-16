@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sbratsla/pr-bot/internal/logger"
-	"github.com/sbratsla/pr-bot/internal/models"
+	"github.com/shay23bra/pr-bot/internal/logger"
+	"github.com/shay23bra/pr-bot/internal/models"
 	"github.com/xuri/excelize/v2"
 )
 

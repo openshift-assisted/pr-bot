@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sbratsla/pr-bot/internal/logger"
+	"github.com/shay23bra/pr-bot/internal/logger"
 )
 
 const (
 	// GitHub API URL for releases
-	releasesAPI = "https://api.github.com/repos/sbratsla/pr-bot/releases/latest"
+	releasesAPI = "https://api.github.com/repos/shay23bra/pr-bot/releases/latest"
 	// Timeout for version check
 	versionCheckTimeout = 5 * time.Second
 )
@@ -102,8 +102,8 @@ func CheckForUpdates(ctx context.Context) {
 
 	if currentVersion != latestVersion {
 		fmt.Printf("\n⚠️  A newer version is available: %s (current: %s)\n", latestVersion, currentVersion)
-		fmt.Printf("📦 Update with: go install github.com/sbratsla/pr-bot@latest\n")
-		fmt.Printf("🔗 Or download from: https://github.com/sbratsla/pr-bot/releases/latest\n\n")
+		fmt.Printf("📦 Update with: go install github.com/shay23bra/pr-bot@latest\n")
+		fmt.Printf("🔗 Or download from: https://github.com/shay23bra/pr-bot/releases/latest\n\n")
 	}
 }
 

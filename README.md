@@ -12,7 +12,7 @@ A Go-based tool to analyze merged pull requests and determine their presence acr
 ### CLI Mode
 ```bash
 # Install latest release
-go install github.com/sbratsla/pr-bot@v0.0.2
+go install github.com/shay23bra/pr-bot@v0.0.3
 
 # Set up environment variables via export
 export PR_BOT_GITHUB_TOKEN="your_github_token_here"
@@ -77,10 +77,10 @@ pr-bot -server
 ### Option 1: Install via Go (Recommended)
 ```bash
 # Install latest stable release (recommended)
-go install github.com/sbratsla/pr-bot@v0.0.2
+go install github.com/shay23bra/pr-bot@v0.0.3
 
 # Or install from production branch
-go install github.com/sbratsla/pr-bot@latest
+go install github.com/shay23bra/pr-bot@latest
 
 # Verify installation
 pr-bot -version
@@ -89,7 +89,7 @@ pr-bot -version
 ### Option 2: Download Binary
 ```bash
 # Download from GitHub releases (replace VERSION with actual version)
-wget https://github.com/sbratsla/pr-bot/releases/latest/download/pr-bot-linux-amd64
+wget https://github.com/shay23bra/pr-bot/releases/latest/download/pr-bot-linux-amd64
 chmod +x pr-bot-linux-amd64
 mv pr-bot-linux-amd64 pr-bot
 
@@ -100,7 +100,7 @@ sudo mv pr-bot /usr/local/bin/
 ### Option 3: Build from Source
 ```bash
 # Clone and build
-git clone https://github.com/sbratsla/pr-bot.git
+git clone https://github.com/shay23bra/pr-bot.git
 cd pr-bot
 go build -o pr-bot .
 ```
@@ -214,7 +214,7 @@ For MCE snapshot validation (used in PR analysis and version comparison), you'll
 ### Setup
 
 ```bash
-git clone https://github.com/sbratsla/pr-bot.git
+git clone https://github.com/shay23bra/pr-bot.git
 cd pr-bot
 go mod tidy
 ```
@@ -421,8 +421,8 @@ The tool automatically checks for updates when running CLI commands:
 $ pr-bot -pr https://github.com/openshift/assisted-service/pull/1234
 
 ⚠️  A newer version is available: 0.1.0 (current: 0.0.1)
-📦 Update with: go install github.com/sbratsla/pr-bot@latest
-🔗 Or download from: https://github.com/sbratsla/pr-bot/releases/latest
+📦 Update with: go install github.com/shay23bra/pr-bot@latest
+🔗 Or download from: https://github.com/shay23bra/pr-bot/releases/latest
 
 # Then it continues with normal execution...
 ```
@@ -446,7 +446,7 @@ The update check:
 echo "🚀 Installing pr-bot..."
 
 # Install latest version
-go install github.com/sbratsla/pr-bot@latest
+go install github.com/shay23bra/pr-bot@latest
 
 # Verify installation
 pr-bot -version

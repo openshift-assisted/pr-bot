@@ -15,16 +15,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sbratsla/pr-bot/internal/config"
-	"github.com/sbratsla/pr-bot/internal/ga"
-	"github.com/sbratsla/pr-bot/internal/github"
-	"github.com/sbratsla/pr-bot/internal/gitlab"
-	"github.com/sbratsla/pr-bot/internal/jira"
-	"github.com/sbratsla/pr-bot/internal/logger"
-	"github.com/sbratsla/pr-bot/internal/models"
-	"github.com/sbratsla/pr-bot/internal/server"
-	"github.com/sbratsla/pr-bot/internal/version"
-	"github.com/sbratsla/pr-bot/pkg/analyzer"
+	"github.com/shay23bra/pr-bot/internal/config"
+	"github.com/shay23bra/pr-bot/internal/ga"
+	"github.com/shay23bra/pr-bot/internal/github"
+	"github.com/shay23bra/pr-bot/internal/gitlab"
+	"github.com/shay23bra/pr-bot/internal/jira"
+	"github.com/shay23bra/pr-bot/internal/logger"
+	"github.com/shay23bra/pr-bot/internal/models"
+	"github.com/shay23bra/pr-bot/internal/server"
+	"github.com/shay23bra/pr-bot/internal/version"
+	"github.com/shay23bra/pr-bot/pkg/analyzer"
 )
 
 func main() {
