@@ -158,14 +158,14 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 			}
 
 			if found {
-				// For Version-prefixed branches (v*), find the exact release versions
-				if branch.Pattern == "v" {
-					logger.Debug("Finding exact release versions for %s (v%s)", branch.Name, branch.Version)
+				// For Version-prefixed branches (v*) and UI release branches (releases/v*), find the exact release versions
+				if branch.Pattern == "v" || branch.Pattern == "releases/v" {
+					logger.Debug("Finding exact release versions for %s (%s)", branch.Name, branch.Version)
 					foundTags, tagErr := a.githubClient.FindCommitInVersionTags(
 						a.config.Owner,
 						a.config.Repository,
 						prInfo.Hash,
-						branch.Name, // e.g., "v2.40" for branch v2.40
+						branch.Name, // e.g., "v2.40" for branch v2.40 or "releases/v2.15-cim" for releases/v branch
 					)
 					if tagErr != nil {
 						logger.Debug("Warning: failed to find release versions for %s: %v", branch.Name, tagErr)
@@ -377,8 +377,8 @@ func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRI
 				}
 
 				if found {
-					// For Version-prefixed branches (v*), find the exact release versions
-					if branchInfo.Pattern == "v" {
+					// For Version-prefixed branches (v*) and UI release branches (releases/v*), find the exact release versions
+					if branchInfo.Pattern == "v" || branchInfo.Pattern == "releases/v" {
 						foundTags, err := a.githubClient.FindCommitInVersionTags(
 							a.config.Owner,
 							a.config.Repository,
@@ -646,7 +646,7 @@ func (a *Analyzer) PrintSummary(result *models.PRAnalysisResult) {
 
 	// Group branches by pattern for better organization
 	patternGroups := make(map[string][]models.BranchPresence)
-	patternOrder := []string{"release-ocm-", "release-", "release-v", "v"}
+	patternOrder := []string{"release-ocm-", "releases/v", "release-", "release-v", "v"}
 
 	for _, branch := range allFoundBranches {
 		patternGroups[branch.Pattern] = append(patternGroups[branch.Pattern], branch)
@@ -800,6 +800,8 @@ func getPatternDescription(pattern string) string {
 	switch pattern {
 	case "release-ocm-":
 		return "ACM/MCE"
+	case "releases/v":
+		return "UI Release"
 	case "release-":
 		return "OpenShift"
 	case "release-v":
@@ -877,6 +879,8 @@ func (a *Analyzer) performMCEValidation(upcomingGAs []models.UpcomingGA, prCommi
 				componentName = "assisted-installer"
 			} else if a.config.Repository == "assisted-installer-agent" {
 				componentName = "assisted-installer-agent"
+			} else if a.config.Repository == "assisted-installer-ui" {
+				componentName = "assisted-installer-ui"
 			}
 
 			validation, err := a.gitlabClient.ValidateMCESnapshotForComponent(ga.Product, ga.Version, ga.GADate, prCommitSHA, componentName)

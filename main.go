@@ -692,11 +692,12 @@ func handleJiraTicketAnalysis(jiraInput string) {
 	prURLsMap := make(map[string]bool)
 	var uniquePRURLs []string
 
-	// Support assisted-service, assisted-installer, and assisted-installer-agent repositories
+	// Support assisted-service, assisted-installer, assisted-installer-agent, and assisted-installer-ui repositories
 	supportedRepos := []string{
 		fmt.Sprintf("github.com/%s/assisted-service/pull/", cfg.Owner),
 		fmt.Sprintf("github.com/%s/assisted-installer/pull/", cfg.Owner),
 		fmt.Sprintf("github.com/%s/assisted-installer-agent/pull/", cfg.Owner),
+		fmt.Sprintf("github.com/openshift-assisted/assisted-installer-ui/pull/"), // Different owner
 	}
 
 	for _, prURL := range allPRURLs {
@@ -713,7 +714,7 @@ func handleJiraTicketAnalysis(jiraInput string) {
 	}
 
 	if len(uniquePRURLs) == 0 {
-		fmt.Printf("No GitHub PRs found for supported repositories (assisted-service, assisted-installer, assisted-installer-agent) in the related JIRA tickets\n")
+		fmt.Printf("No GitHub PRs found for supported repositories (assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui) in the related JIRA tickets\n")
 		return
 	}
 

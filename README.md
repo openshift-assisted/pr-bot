@@ -217,12 +217,16 @@ Analyze a merged PR from any supported repository:
 
 # Analyze a PR from assisted-installer-agent
 ./pr-bot -pr https://github.com/openshift/assisted-installer-agent/pull/200
+
+# Analyze a PR from assisted-installer-ui
+./pr-bot -pr https://github.com/openshift-assisted/assisted-installer-ui/pull/2991
 ```
 
 **Supported Repositories:**
 - `openshift/assisted-service`
 - `openshift/assisted-installer`
 - `openshift/assisted-installer-agent`
+- `openshift-assisted/assisted-installer-ui`
 
 **Supported Components for MCE Validation:**
 - `assisted-service` - Direct SHA extraction from down-sha.yaml

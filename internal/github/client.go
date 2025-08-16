@@ -432,6 +432,9 @@ func ExtractVersionFromBranchWithPattern(branchName, pattern string) string {
 	case "release-ocm-":
 		// For release-ocm- branches, extract version like "2.13", "1.0.5", etc.
 		versionRegex = regexp.MustCompile(`^(\d+\.\d+(?:\.\d+)?)`)
+	case "releases/v":
+		// For releases/v branches, extract version like "2.15-cim", "2.44.0", etc.
+		versionRegex = regexp.MustCompile(`^(\d+\.\d+(?:\.\d+)?(?:-\w+)?)`)
 	case "release-v":
 		// For release-v branches, extract version like "1.0.9.6", "2.1.0", etc.
 		versionRegex = regexp.MustCompile(`^(\d+\.\d+\.\d+(?:\.\d+)?)`)
@@ -477,6 +480,7 @@ func (c *Client) GetAllReleaseBranches(owner, repo string) ([]BranchInfo, error)
 	// Define the branch patterns to search for
 	branchPatterns := []string{
 		"release-ocm-",
+		"releases/v", // For assisted-installer-ui style branches
 		"release-v",
 		"release-",
 		"v",
@@ -496,14 +500,20 @@ func (c *Client) GetAllReleaseBranches(owner, repo string) ([]BranchInfo, error)
 				if strings.HasPrefix(name, pattern) {
 					// Special handling for patterns to avoid duplicates
 					if pattern == "release-" {
-						// Skip if it matches release-v or release-ocm- patterns
-						if strings.HasPrefix(name, "release-v") || strings.HasPrefix(name, "release-ocm-") {
+						// Skip if it matches release-v, release-ocm-, or releases/v patterns
+						if strings.HasPrefix(name, "release-v") || strings.HasPrefix(name, "release-ocm-") || strings.HasPrefix(name, "releases/v") {
+							continue
+						}
+					}
+					if pattern == "release-v" {
+						// Skip if it matches releases/v pattern
+						if strings.HasPrefix(name, "releases/v") {
 							continue
 						}
 					}
 					if pattern == "v" {
-						// Skip if it matches release-v pattern or if it's not a version pattern
-						if strings.HasPrefix(name, "release-v") {
+						// Skip if it matches release-v or releases/v patterns or if it's not a version pattern
+						if strings.HasPrefix(name, "release-v") || strings.HasPrefix(name, "releases/v") {
 							continue
 						}
 						// Only match if it's v followed by a digit (version pattern)
