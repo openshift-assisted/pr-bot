@@ -224,6 +224,12 @@ Analyze a merged PR from any supported repository:
 - `openshift/assisted-installer`
 - `openshift/assisted-installer-agent`
 
+**Supported Components for MCE Validation:**
+- `assisted-service` - Direct SHA extraction from down-sha.yaml
+- `assisted-installer` - Direct SHA extraction from down-sha.yaml  
+- `assisted-installer-agent` - Direct SHA extraction from down-sha.yaml
+- `assisted-installer-ui` - Version extraction via stolostron/console → frontend/package.json → @openshift-assisted/ui-lib
+
 The tool automatically detects the repository from the PR URL and performs the same analysis (GA status, MCE validation, etc.) for all supported repositories.
 
 ### Version Comparison

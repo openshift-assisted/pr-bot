@@ -4,12 +4,14 @@ package gitlab
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sbratsla/pr-bot/internal/github"
 	"github.com/sbratsla/pr-bot/internal/logger"
 	"github.com/sbratsla/pr-bot/internal/models"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -18,16 +20,18 @@ import (
 
 // Client wraps the GitLab API client.
 type Client struct {
-	client *gitlab.Client
-	ctx    context.Context
+	client       *gitlab.Client
+	githubClient *github.Client
+	ctx          context.Context
 }
 
 // NewClient creates a new GitLab client.
-func NewClient(ctx context.Context, token string) *Client {
+func NewClient(ctx context.Context, token string, githubClient *github.Client) *Client {
 	client, _ := gitlab.NewClient(token, gitlab.WithBaseURL("https://gitlab.cee.redhat.com"))
 	return &Client{
-		client: client,
-		ctx:    ctx,
+		client:       client,
+		githubClient: githubClient,
+		ctx:          ctx,
 	}
 }
 
@@ -248,6 +252,11 @@ func (c *Client) validateVersionInBuildStatus(mceBranch, snapshotFolder, expecte
 func (c *Client) ExtractComponentSHA(mceBranch, snapshotFolder, componentName string) (string, error) {
 	logger.Debug("Extracting %s SHA from down-sha.yaml", componentName)
 
+	// Special handling for assisted-installer-ui
+	if componentName == "assisted-installer-ui" {
+		return c.extractAssistedInstallerUIVersion(mceBranch, snapshotFolder)
+	}
+
 	// Try to extract SHA from the specified snapshot folder first
 	sha, err := c.extractComponentSHAFromSnapshot(mceBranch, snapshotFolder, componentName)
 	if err == nil {
@@ -328,7 +337,7 @@ func (c *Client) extractComponentSHAFromSnapshot(mceBranch, snapshotFolder, comp
 		logger.Debug("  - %s", key)
 	}
 
-	// Look for the component (e.g., multicluster-engine-assisted-service-9, multicluster-engine-assisted-installer-X, or multicluster-engine-assisted-installer-agent-Y)
+	// Look for the component (e.g., multicluster-engine-assisted-service-9, multicluster-engine-assisted-installer-X, multicluster-engine-assisted-installer-agent-Y, or assisted-installer-ui via stolostron/console)
 	var targetComponent interface{}
 	var componentFound bool
 
@@ -541,6 +550,128 @@ func (c *Client) getAllSnapshotFolders(mceBranch string) ([]string, error) {
 	}
 
 	return folders, nil
+}
+
+// extractAssistedInstallerUIVersion extracts the assisted-installer-ui version through stolostron/console
+func (c *Client) extractAssistedInstallerUIVersion(mceBranch, snapshotFolder string) (string, error) {
+	logger.Debug("Extracting assisted-installer-ui version via stolostron/console")
+
+	// First, get the stolostron/console SHA from down-sha.yaml
+	consoleSHA, err := c.extractStolostronConsoleSHA(mceBranch, snapshotFolder)
+	if err != nil {
+		return "", fmt.Errorf("failed to extract stolostron/console SHA: %v", err)
+	}
+
+	logger.Debug("Found stolostron/console SHA: %s", consoleSHA)
+
+	// Fetch package.json from GitHub at that specific SHA
+	version, err := c.fetchUILibVersionFromGitHub(consoleSHA)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch UI lib version from GitHub: %v", err)
+	}
+
+	// Convert version to tag format (e.g., "2.15.1-cim" -> "v2.15.1-cim")
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+
+	logger.Debug("Extracted assisted-installer-ui version: %s", version)
+	return version, nil
+}
+
+// extractStolostronConsoleSHA extracts the SHA for stolostron/console from down-sha.yaml
+func (c *Client) extractStolostronConsoleSHA(mceBranch, snapshotFolder string) (string, error) {
+	// Get the down-sha.yaml content
+	projectID := "acm-cicd/mce-bb2"
+	filePath := fmt.Sprintf("snapshots/%s/down-sha.yaml", snapshotFolder)
+
+	file, resp, err := c.client.RepositoryFiles.GetFile(projectID, filePath, &gitlab.GetFileOptions{
+		Ref: &mceBranch,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get down-sha.yaml: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to get down-sha.yaml, status: %d", resp.StatusCode)
+	}
+
+	// Decode and parse YAML
+	content, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode down-sha.yaml: %w", err)
+	}
+
+	var downSHA DownSHA
+	if err := yaml.Unmarshal(content, &downSHA); err != nil {
+		return "", fmt.Errorf("failed to parse down-sha.yaml: %w", err)
+	}
+
+	// Navigate to component structure
+	component, exists := downSHA["component"]
+	if !exists {
+		return "", fmt.Errorf("component key not found in down-sha.yaml")
+	}
+
+	componentMap, ok := component.(map[interface{}]interface{})
+	if !ok {
+		return "", fmt.Errorf("component has unexpected structure")
+	}
+
+	// Look for stolostron/console
+	for key, value := range componentMap {
+		if keyStr, ok := key.(string); ok && strings.Contains(keyStr, "console") {
+			// Found console component, extract SHA
+			if valueMap, ok := value.(map[interface{}]interface{}); ok {
+				if consoleRepo, exists := valueMap["stolostron/console"]; exists {
+					if consoleMap, ok := consoleRepo.(map[interface{}]interface{}); ok {
+						if sha, exists := consoleMap["sha"]; exists {
+							if shaStr, ok := sha.(string); ok {
+								logger.Debug("Found stolostron/console SHA: %s", shaStr)
+								return shaStr, nil
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("stolostron/console not found in down-sha.yaml")
+}
+
+// fetchUILibVersionFromGitHub fetches the @openshift-assisted/ui-lib version from GitHub
+func (c *Client) fetchUILibVersionFromGitHub(consoleSHA string) (string, error) {
+	if c.githubClient == nil {
+		return "", fmt.Errorf("GitHub client not available")
+	}
+
+	// Fetch frontend/package.json from stolostron/console at the specific SHA
+	content, err := c.githubClient.GetFileContent("stolostron", "console", "frontend/package.json", consoleSHA)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch package.json: %v", err)
+	}
+
+	// Parse package.json
+	var packageJSON map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &packageJSON); err != nil {
+		return "", fmt.Errorf("failed to parse package.json: %v", err)
+	}
+
+	// Extract dependencies
+	deps, ok := packageJSON["dependencies"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("dependencies not found in package.json")
+	}
+
+	// Look for @openshift-assisted/ui-lib
+	uiLibVersion, ok := deps["@openshift-assisted/ui-lib"].(string)
+	if !ok {
+		return "", fmt.Errorf("@openshift-assisted/ui-lib not found in dependencies")
+	}
+
+	logger.Debug("Found @openshift-assisted/ui-lib version: %s", uiLibVersion)
+	return uiLibVersion, nil
 }
 
 // ExtractAssistedServiceSHA extracts the SHA for assisted-service - backward compatibility wrapper

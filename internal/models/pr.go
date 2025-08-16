@@ -79,7 +79,7 @@ type MCESnapshotValidation struct {
 	MCEBranch          string     `json:"mce_branch"`           // e.g., "mce-2.8"
 	SnapshotFolder     string     `json:"snapshot_folder"`      // e.g., "2025-03-14-18-55-26"
 	ValidationSuccess  bool       `json:"validation_success"`   // Whether validation passed
-	ComponentName      string     `json:"component_name"`       // e.g., "assisted-service", "assisted-installer", "assisted-installer-agent"
+	ComponentName      string     `json:"component_name"`       // e.g., "assisted-service", "assisted-installer", "assisted-installer-agent", "assisted-installer-ui"
 	AssistedServiceSHA string     `json:"assisted_service_sha"` // SHA from down-sha.yaml
 	PRCommitBeforeSHA  bool       `json:"pr_commit_before_sha"` // Whether PR commit is before the SHA
 	ErrorMessage       string     `json:"error_message"`        // Error details if validation failed

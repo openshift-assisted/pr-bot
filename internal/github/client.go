@@ -537,3 +537,24 @@ func (c *Client) GetAllReleaseBranches(owner, repo string) ([]BranchInfo, error)
 func (c *Client) GetCommit(owner, repo, sha string) (*github.RepositoryCommit, *github.Response, error) {
 	return c.client.Repositories.GetCommit(c.ctx, owner, repo, sha, nil)
 }
+
+// GetFileContent fetches the content of a file from a specific SHA.
+func (c *Client) GetFileContent(owner, repo, path, sha string) (string, error) {
+	fileContent, _, _, err := c.client.Repositories.GetContents(c.ctx, owner, repo, path, &github.RepositoryContentGetOptions{
+		Ref: sha,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch file %s from %s/%s at SHA %s: %w", path, owner, repo, sha, err)
+	}
+
+	if fileContent == nil {
+		return "", fmt.Errorf("file %s not found in %s/%s at SHA %s", path, owner, repo, sha)
+	}
+
+	content, err := fileContent.GetContent()
+	if err != nil {
+		return "", fmt.Errorf("failed to decode file content: %w", err)
+	}
+
+	return content, nil
+}

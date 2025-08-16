@@ -51,7 +51,7 @@ func New(ctx context.Context, config *models.Config) *Analyzer {
 
 	var gitlabClient *gitlab.Client
 	if config.GitLabToken != "" {
-		gitlabClient = gitlab.NewClient(ctx, config.GitLabToken)
+		gitlabClient = gitlab.NewClient(ctx, config.GitLabToken, githubClient)
 	}
 
 	var jiraClient *jira.Client

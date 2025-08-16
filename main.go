@@ -262,15 +262,15 @@ func handleMCEVersionComparison(version string) {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Create GitLab client
+	// Create GitHub client for commit comparison
 	ctx := context.Background()
-	gitlabClient := gitlab.NewClient(ctx, cfg.GitLabToken)
+	githubClient := github.NewClient(ctx, cfg.GitHubToken)
+
+	// Create GitLab client
+	gitlabClient := gitlab.NewClient(ctx, cfg.GitLabToken, githubClient)
 	if gitlabClient == nil {
 		log.Fatalf("Failed to create GitLab client. Please set PR_BOT_GITLAB_TOKEN environment variable.")
 	}
-
-	// Create GitHub client for commit comparison
-	githubClient := github.NewClient(ctx, cfg.GitHubToken)
 
 	// Load GA parser
 	excelFile := "data/ACM - Z Stream Release Schedule.xlsx"
@@ -381,7 +381,8 @@ func findPreviousMCEVersion(version string, gaParser *ga.Parser) (string, error)
 	}
 
 	ctx := context.Background()
-	gitlabClient := gitlab.NewClient(ctx, cfg.GitLabToken)
+	githubClient := github.NewClient(ctx, cfg.GitHubToken)
+	gitlabClient := gitlab.NewClient(ctx, cfg.GitLabToken, githubClient)
 	if gitlabClient == nil {
 		return "", fmt.Errorf("failed to create GitLab client")
 	}
