@@ -12,7 +12,7 @@ A Go-based tool to analyze merged pull requests and determine their presence acr
 ### CLI Mode
 ```bash
 # Install latest release
-go install github.com/shay23bra/pr-bot@v0.0.3
+go install github.com/shay23bra/pr-bot@v0.0.4
 
 # Add Go bin to PATH (if needed)
 export PATH=$PATH:~/go/bin
@@ -458,6 +458,24 @@ source ~/.bashrc
 # Verify it works
 pr-bot -version
 ```
+
+### Missing Environment Variables
+
+The CLI validates that required tokens are exported before running commands that need them:
+
+```bash
+❌ Missing required environment variables for CLI mode:
+   • PR_BOT_GITHUB_TOKEN
+   • PR_BOT_GITLAB_TOKEN
+   • PR_BOT_JIRA_TOKEN
+
+🔧 To fix this, export the missing variables:
+  export PR_BOT_GITHUB_TOKEN="your_github_token_here"
+  export PR_BOT_GITLAB_TOKEN="your_gitlab_token_here"
+  export PR_BOT_JIRA_TOKEN="your_jira_token_here"
+```
+
+**Note:** Help (`pr-bot`) and version (`pr-bot -version`) commands don't require tokens.
 
 ### "version constraints conflict"
 

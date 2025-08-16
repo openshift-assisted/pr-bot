@@ -27,6 +27,53 @@ import (
 	"github.com/shay23bra/pr-bot/pkg/analyzer"
 )
 
+// validateCLIEnvironment checks that all required environment variables are set for CLI mode
+func validateCLIEnvironment() {
+	var missingVars []string
+	var recommendations []string
+
+	// Check required tokens
+	githubToken := os.Getenv("PR_BOT_GITHUB_TOKEN")
+	gitlabToken := os.Getenv("PR_BOT_GITLAB_TOKEN")
+	jiraToken := os.Getenv("PR_BOT_JIRA_TOKEN")
+
+	if githubToken == "" {
+		missingVars = append(missingVars, "PR_BOT_GITHUB_TOKEN")
+		recommendations = append(recommendations, "  export PR_BOT_GITHUB_TOKEN=\"your_github_token_here\"")
+	}
+
+	if gitlabToken == "" {
+		missingVars = append(missingVars, "PR_BOT_GITLAB_TOKEN")
+		recommendations = append(recommendations, "  export PR_BOT_GITLAB_TOKEN=\"your_gitlab_token_here\"")
+	}
+
+	if jiraToken == "" {
+		missingVars = append(missingVars, "PR_BOT_JIRA_TOKEN")
+		recommendations = append(recommendations, "  export PR_BOT_JIRA_TOKEN=\"your_jira_token_here\"")
+	}
+
+	if len(missingVars) > 0 {
+		fmt.Fprintf(os.Stderr, "\n❌ Missing required environment variables for CLI mode:\n")
+		for _, varName := range missingVars {
+			fmt.Fprintf(os.Stderr, "   • %s\n", varName)
+		}
+
+		fmt.Fprintf(os.Stderr, "\n🔧 To fix this, export the missing variables:\n")
+		for _, rec := range recommendations {
+			fmt.Fprintf(os.Stderr, "%s\n", rec)
+		}
+
+		fmt.Fprintf(os.Stderr, "\n📖 For token setup instructions:\n")
+		fmt.Fprintf(os.Stderr, "   • GitHub: https://github.com/settings/tokens\n")
+		fmt.Fprintf(os.Stderr, "   • GitLab: https://gitlab.cee.redhat.com/-/user_settings/personal_access_tokens\n")
+		fmt.Fprintf(os.Stderr, "   • JIRA: https://issues.redhat.com/secure/ViewProfile.jspa?selectedTab=com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens\n")
+
+		fmt.Fprintf(os.Stderr, "\n💡 Note: For server mode, use a .env file instead of exports.\n\n")
+
+		os.Exit(1)
+	}
+}
+
 func main() {
 	// Parse command-line flags
 	debugFlag := flag.Bool("d", false, "Enable debug logging")
@@ -91,6 +138,13 @@ func main() {
 	}
 
 	args := flag.Args()
+
+	// Check if we have any flags/args that require token validation
+	needsValidation := *versionFlag != "" || *prFlag != "" || *jiraTicketFlag != "" || len(args) > 0
+	if needsValidation {
+		// Validate required environment variables for CLI mode
+		validateCLIEnvironment()
+	}
 
 	// Handle version comparison mode
 	if *versionFlag != "" {
