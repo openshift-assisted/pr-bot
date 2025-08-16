@@ -258,7 +258,7 @@ func (c *Client) ExtractGitHubPRsFromIssue(issue JiraIssue) []string {
 
 // ExtractMGMTTicketFromTitle extracts MGMT ticket number from PR title.
 func ExtractMGMTTicketFromTitle(title string) string {
-	re := regexp.MustCompile(`^MGMT-(\d+)`)
+	re := regexp.MustCompile(`MGMT-(\d+)`)
 	matches := re.FindStringSubmatch(title)
 	if len(matches) >= 2 {
 		return "MGMT-" + matches[1]
