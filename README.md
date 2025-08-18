@@ -21,8 +21,8 @@ export PATH=$PATH:~/go/bin
 
 # Check what version you got
 pr-bot --data-source
-# Maintainer releases: "Source: embedded (67339 bytes)" ✅  
-# Self-built: "Source: filesystem" (need Excel file)
+# Result: "Source: filesystem" (requires Excel file at data/ACM - Z Stream Release Schedule.xlsx)
+# Note: Only pre-built release binaries contain embedded data
 
 # Set up your API tokens
 export PR_BOT_GITHUB_TOKEN="your_github_token_here"
