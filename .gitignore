@@ -36,10 +36,9 @@ internal/embedded/*.xlsx
 internal/embedded/*.xls  
 internal/embedded/*.csv
 
-# Keep embedded package structure and placeholder file
+# Keep embedded package structure but not the data files
 !internal/embedded/
 !internal/embedded/*.go
-!internal/embedded/schedule.xlsx
 
 # IDE and editor files  
 .vscode/

@@ -13,15 +13,16 @@ A Go-based tool to analyze merged pull requests and determine their presence acr
 
 ### CLI Mode
 ```bash
-# Install latest release with embedded data
+# Install latest release  
 go install github.com/shay23bra/pr-bot@latest
 
 # Add Go bin to PATH (if needed)  
 export PATH=$PATH:~/go/bin
 
-# Verify it works immediately (data is embedded!)
+# Check what version you got
 pr-bot --data-source
-# Shows: "Source: embedded (67339 bytes)" ✅
+# Maintainer releases: "Source: embedded (67339 bytes)" ✅  
+# Self-built: "Source: filesystem" (need Excel file)
 
 # Set up your API tokens
 export PR_BOT_GITHUB_TOKEN="your_github_token_here"
@@ -95,9 +96,9 @@ This tool uses an **embedded data approach** that allows the repository to be **
 
 | Who | What They Get | How |
 |-----|---------------|-----|
-| **👥 Users** | Embedded data | `go install github.com/shay23bra/pr-bot@latest` |
-| **🔧 Contributors** | Filesystem version | `go build -tags=filesystem` |
-| **👤 Maintainers** | Can build & release | Have private Excel file |
+| **👥 Users** | Get maintainer-built binaries | Download from releases or `go install` |
+| **🔧 Contributors** | Filesystem version | `go build` (default) |
+| **👤 Maintainers** | Can build embedded releases | `go build -tags=embedded` + have Excel file |
 
 ### ⚡ **Benefits**
 - ✅ **Instant Use**: `go install` works immediately with embedded data
@@ -639,8 +640,8 @@ If your IDE shows errors like "No packages found for embedded files" or import i
 
 **Verify both work:**
 ```bash
-go build .                    # embedded version (default)
-go build -tags=filesystem .   # filesystem version (contributors)
+go build .                    # filesystem version (default)
+go build -tags=embedded .     # embedded version (maintainers only)
 ```
 
 ## Team Deployment

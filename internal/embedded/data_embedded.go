@@ -1,5 +1,5 @@
-//go:build !filesystem
-// +build !filesystem
+//go:build embedded
+// +build embedded
 
 // Package embedded provides build-time embedded data for pr-bot.
 // This is the DEFAULT build - embedded data is included by default

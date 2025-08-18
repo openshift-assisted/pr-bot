@@ -17,10 +17,10 @@ if [ -f "$EMBED_FILE" ]; then
     exit 1
 fi
 
-# Build without embedded data (for contributors)
+# Build without embedded data (default build)
 echo "🚀 Building binary without embedded data..."
-echo "📦 Build flags: -tags=filesystem -ldflags='-s -w'"
-go build -tags=filesystem -ldflags="-s -w" -o "$OUTPUT_BINARY" .
+echo "📦 Build flags: -ldflags='-s -w' (filesystem is default)"
+go build -ldflags="-s -w" -o "$OUTPUT_BINARY" .
 
 # Verify build succeeded
 if [ ! -f "$OUTPUT_BINARY" ]; then

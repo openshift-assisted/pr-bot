@@ -1,5 +1,5 @@
-//go:build filesystem
-// +build filesystem
+//go:build !embedded
+// +build !embedded
 
 // Package embedded provides filesystem-based data access for pr-bot.
 // This is the DEFAULT build - used when no build tags are specified

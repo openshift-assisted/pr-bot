@@ -30,10 +30,10 @@ if [ ! -f "$EMBED_FILE" ]; then
     exit 1
 fi
 
-# Build with embedded data (default build)
+# Build with embedded data (requires -tags=embedded)
 echo "🚀 Building binary with embedded data..."
-echo "📦 Build flags: -ldflags='-s -w' (embedded is default)"
-go build -ldflags="-s -w" -o "$OUTPUT_BINARY" .
+echo "📦 Build flags: -tags=embedded -ldflags='-s -w'"
+go build -tags=embedded -ldflags="-s -w" -o "$OUTPUT_BINARY" .
 
 # Verify build succeeded
 if [ ! -f "$OUTPUT_BINARY" ]; then
