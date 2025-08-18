@@ -838,7 +838,29 @@ Latest message found:
 - **Merged but not GA**: The change is merged but no GA date is available yet
 - **Not Found**: No release information found for this version
 
-## Development
+## 🤝 Contributing
+
+### 🔐 **Approval Required**
+**All changes require maintainer approval before merging.**
+
+- 📝 **Open issues** for discussions and feature requests
+- 🔄 **Submit PRs** for code changes - all PRs require review
+- ⏳ **Wait for approval** - no self-merging allowed
+- 🚫 **No direct pushes** - all changes go through PR process
+
+### 👤 **Maintainer Contact**
+Contact the repository maintainer for questions or urgent changes.
+
+### 🛠️ **For Contributors**
+- Fork the repository
+- Create a feature branch
+- Make your changes
+- Submit a PR with clear description
+- Wait for maintainer approval
+
+---
+
+## 🛠️ Development
 
 ### Project Structure
 
