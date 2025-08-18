@@ -199,9 +199,9 @@ cp /path/to/private/"ACM - Z Stream Release Schedule.xlsx" data/
 # Build with embedded data
 ./scripts/build-with-data.sh
 
-# For releases, create and push a tag:
-git tag v0.2.0 && git push origin v0.2.0
-# GitHub Actions will automatically build and release with embedded data
+# For releases, build and release manually:
+./scripts/build-with-data.sh
+gh release create v0.X.X --title "vX.X.X - Release Title" --notes "Release notes" ./pr-bot
 ```
 
 **⚡ Why This Restriction:**
