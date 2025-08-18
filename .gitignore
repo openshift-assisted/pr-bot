@@ -25,11 +25,21 @@ test_output.txt
 logs/
 *.out
 
-# Data files (may contain sensitive information) 
-# data/ TODO: remove comment when public
-# *.xlsx TODO: remove comment when public
-# *.xls TODO: remove comment when public
-# *.csv TODO: remove comment when public
+# Data files (contains sensitive information - excluded from public repo)
+data/
+*.xlsx
+*.xls
+*.csv
+
+# Embedded data files (temporary files during private builds)
+internal/embedded/*.xlsx
+internal/embedded/*.xls  
+internal/embedded/*.csv
+
+# Keep embedded package structure and placeholder file
+!internal/embedded/
+!internal/embedded/*.go
+!internal/embedded/schedule.xlsx
 
 # IDE and editor files
 .vscode/

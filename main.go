@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/shay23bra/pr-bot/internal/config"
+	"github.com/shay23bra/pr-bot/internal/embedded"
 	"github.com/shay23bra/pr-bot/internal/ga"
 	"github.com/shay23bra/pr-bot/internal/github"
 	"github.com/shay23bra/pr-bot/internal/gitlab"
@@ -82,6 +83,7 @@ func main() {
 	jiraTicketFlag := flag.String("jt", "", "Analyze all PRs related to a JIRA ticket")
 	serverFlag := flag.Bool("server", false, "Run as Slack bot server")
 	versionOnlyFlag := flag.Bool("version", false, "Show version and exit")
+	dataSourceFlag := flag.Bool("data-source", false, "Show data source information and exit")
 
 	slackSearchCmd := flag.NewFlagSet("slack-search", flag.ExitOnError)
 	slackSearchOwner := slackSearchCmd.String("owner", "stolostron", "Repository owner")
@@ -121,6 +123,19 @@ func main() {
 	// Handle version-only flag first
 	if *versionOnlyFlag {
 		version.PrintVersion()
+		return
+	}
+
+	// Handle data source information flag
+	if *dataSourceFlag {
+		fmt.Printf("📊 Data Source Information:\n")
+		fmt.Printf("Source: %s\n", embedded.GetDataSource())
+		if embedded.HasEmbeddedData() {
+			fmt.Printf("Data Size: %d bytes\n", embedded.GetDataSize())
+			fmt.Printf("Status: ✅ Excel data is embedded in binary\n")
+		} else {
+			fmt.Printf("Status: 📁 Will read from filesystem (requires data/ACM - Z Stream Release Schedule.xlsx)\n")
+		}
 		return
 	}
 

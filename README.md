@@ -1,6 +1,8 @@
 # pr-bot
 
-A Go-based tool to analyze merged pull requests and determine their presence across release branches. Available as both a **CLI tool** for individual use and a **Slack bot server** for team collaboration. This tool helps track the deployment status of changes across different release versions.
+A Go-based tool to analyze merged pull requests and determine their presence across release branches. Available as both a **CLI tool** for individual use and a **Slack bot server** for team collaboration.
+
+✨ **Ready to use out of the box** - `go install` gives you a fully functional tool with embedded data, no external files needed! The tool helps track the deployment status of changes across different release versions.
 
 ## 🌿 Branch Structure
 
@@ -11,18 +13,22 @@ A Go-based tool to analyze merged pull requests and determine their presence acr
 
 ### CLI Mode
 ```bash
-# Install latest release
-go install github.com/shay23bra/pr-bot@v0.1.0
+# Install latest release with embedded data
+go install github.com/shay23bra/pr-bot@latest
 
-# Add Go bin to PATH (if needed)
+# Add Go bin to PATH (if needed)  
 export PATH=$PATH:~/go/bin
 
-# Set up environment variables via export
+# Verify it works immediately (data is embedded!)
+pr-bot --data-source
+# Shows: "Source: embedded (67339 bytes)" ✅
+
+# Set up your API tokens
 export PR_BOT_GITHUB_TOKEN="your_github_token_here"
-export PR_BOT_GITLAB_TOKEN="your_gitlab_token_here"
+export PR_BOT_GITLAB_TOKEN="your_gitlab_token_here" 
 export PR_BOT_JIRA_TOKEN="your_jira_token_here"
 
-# Analyze a PR
+# Start analyzing PRs right away - no external files needed!
 pr-bot -pr https://github.com/openshift/assisted-service/pull/7788
 
 # Check version
@@ -75,6 +81,38 @@ pr-bot -server
 - **Flexible Configuration**: Support for environment variables, config files, and command-line options
 - **High Performance**: Optimized with caching and parallel processing to minimize API calls
 
+## 🔒 Data Source Architecture
+
+This tool uses an **embedded data approach** that allows the repository to be **public** while keeping sensitive data **private**:
+
+### 📊 **How It Works**
+1. **Public Repository**: Source code is open for collaboration
+2. **Private Data**: Excel file stays private (not in repo)
+3. **Releases Include Data**: Built with embedded data by maintainers
+4. **Ready to Use**: `go install` gives users embedded data automatically
+
+### 🎯 **Simple Model**
+
+| Who | What They Get | How |
+|-----|---------------|-----|
+| **👥 Users** | Embedded data | `go install github.com/shay23bra/pr-bot@latest` |
+| **🔧 Contributors** | Filesystem version | `go build -tags=filesystem` |
+| **👤 Maintainers** | Can build & release | Have private Excel file |
+
+### ⚡ **Benefits**
+- ✅ **Instant Use**: `go install` works immediately with embedded data
+- ✅ **Public Repository**: Anyone can view source, contribute, fork
+- ✅ **Private Data**: Excel file never exposed publicly
+- ✅ **Zero Dependencies**: Released binaries work anywhere
+- ✅ **Contributor Friendly**: Development builds available without data
+
+### 🔍 **Check Your Version**
+```bash
+pr-bot --data-source
+# Released version:     "Source: embedded (67339 bytes)"
+# Development build:    "Source: filesystem"
+```
+
 ## Installation
 
 ### Option 1: Install via Go (Recommended)
@@ -105,12 +143,72 @@ sudo mv pr-bot /usr/local/bin/
 ```
 
 ### Option 3: Build from Source
+
+#### 🚀 Default Build (With Embedded Data)
+This is what `go install` produces - includes embedded data:
 ```bash
-# Clone and build
+# Clone repository
 git clone https://github.com/shay23bra/pr-bot.git
 cd pr-bot
-go build -o pr-bot .
+
+# Add the private Excel data file
+cp /path/to/your/"ACM - Z Stream Release Schedule.xlsx" data/
+
+# Build with embedded data (default build)
+./scripts/build-with-data.sh
+
+# Verify embedded data
+./pr-bot --data-source
+# Should show: "Source: embedded (67339 bytes)"
 ```
+
+#### 🔧 Contributor Build (Filesystem Data)
+For developers who don't have access to the private data file:
+```bash
+# Clone repository  
+git clone https://github.com/shay23bra/pr-bot.git
+cd pr-bot
+
+# Build filesystem version (for contributors)
+./scripts/build-public.sh
+
+# Verify build mode
+./pr-bot --data-source
+# Should show: "Source: filesystem"
+
+# You'll need to provide your own Excel file at:
+# data/ACM - Z Stream Release Schedule.xlsx
+```
+
+#### 👤 Maintainer Builds & Releases
+**For project maintainers who can build and release new versions:**
+
+⚠️ **Requirements for Building/Releasing:**
+- Access to the private Excel file: `data/ACM - Z Stream Release Schedule.xlsx`
+- GitHub repository write access
+- Being listed in the GitHub Actions workflow conditions
+
+```bash
+# Clone repository
+git clone https://github.com/shay23bra/pr-bot.git
+cd pr-bot
+
+# Add the private Excel data file (required!)
+cp /path/to/private/"ACM - Z Stream Release Schedule.xlsx" data/
+
+# Build with embedded data
+./scripts/build-with-data.sh
+
+# For releases, create and push a tag:
+git tag v0.2.0 && git push origin v0.2.0
+# GitHub Actions will automatically build and release with embedded data
+```
+
+**⚡ Why This Restriction:**
+- Only people with the private Excel file can create releases
+- This ensures sensitive data never gets into public source code
+- Released binaries include embedded data for all users
+- Contributors can still build filesystem versions for development
 
 ### Prerequisites
 
@@ -130,9 +228,9 @@ go build -o pr-bot .
 5. Copy the generated token
 6. Set it as an environment variable:
    - **For CLI usage:**
-     ```bash
-     export PR_BOT_GITHUB_TOKEN="your_token_here"
-     ```
+   ```bash
+   export PR_BOT_GITHUB_TOKEN="your_token_here"
+   ```
    - **For Slack server usage (add to .env file):**
      ```bash
      echo "PR_BOT_GITHUB_TOKEN=your_token_here" >> .env

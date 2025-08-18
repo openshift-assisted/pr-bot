@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shay23bra/pr-bot/internal/embedded"
 	"github.com/shay23bra/pr-bot/internal/logger"
 	"github.com/shay23bra/pr-bot/internal/models"
 	"github.com/xuri/excelize/v2"
@@ -69,17 +70,53 @@ func NewParser(filePath string) *Parser {
 // backgroundParse parses the Excel file in the background and caches the results.
 func (p *Parser) backgroundParse() {
 	p.parseOnce.Do(func() {
-		logger.Debug("Starting background Excel file parsing: %s", p.filePath)
+		logger.Debug("Starting background Excel file parsing")
 		start := time.Now()
 
-		// Open Excel file
-		f, err := excelize.OpenFile(p.filePath)
+		var f *excelize.File
+		var err error
+		var cleanup func()
+
+		// Try embedded data first
+		if embedded.HasEmbeddedData() {
+			logger.Debug("Using embedded Excel data (%d bytes)", embedded.GetDataSize())
+
+			// Create temporary file from embedded data
+			tempPath, cleanupFunc, tempErr := embedded.SaveEmbeddedDataToTempFile()
+			if tempErr != nil {
+				p.parseError = fmt.Errorf("failed to create temp file from embedded data: %w", tempErr)
+				close(p.parseChannel)
+				return
+			}
+			cleanup = cleanupFunc
+
+			f, err = excelize.OpenFile(tempPath)
+		} else if p.filePath != "" {
+			// Fallback to filesystem
+			logger.Debug("Using filesystem Excel file: %s", p.filePath)
+			f, err = excelize.OpenFile(p.filePath)
+		} else {
+			p.parseError = fmt.Errorf("no Excel data available: not embedded and no file path provided")
+			close(p.parseChannel)
+			return
+		}
+
 		if err != nil {
+			if cleanup != nil {
+				cleanup()
+			}
 			p.parseError = fmt.Errorf("failed to open Excel file: %w", err)
 			close(p.parseChannel)
 			return
 		}
-		defer f.Close()
+
+		// Ensure cleanup happens after parsing
+		defer func() {
+			f.Close()
+			if cleanup != nil {
+				cleanup()
+			}
+		}()
 
 		// Parse both tabs
 		inProgressReleases, inProgressErr := p.parseInProgressTab(f)
