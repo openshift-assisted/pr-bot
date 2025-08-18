@@ -41,8 +41,9 @@ internal/embedded/*.csv
 !internal/embedded/*.go
 !internal/embedded/schedule.xlsx
 
-# IDE and editor files
+# IDE and editor files  
 .vscode/
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo

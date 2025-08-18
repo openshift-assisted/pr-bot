@@ -615,6 +615,34 @@ export PR_BOT_GITHUB_TOKEN="your_github_token_here"
 # With a token, you get 5000 requests/hour
 ```
 
+### IDE/Editor Build Tag Warnings
+
+If your IDE shows errors like "No packages found for embedded files" or import issues:
+
+**Issue:** The embedded package uses build tags, which can confuse IDEs.
+
+**For VSCode with Go extension:**
+```json
+// Add to .vscode/settings.json in your project
+{
+    "go.buildTags": "",
+    "gopls": {
+        "buildFlags": ["-tags="]
+    }
+}
+```
+
+**For other editors:**
+- Default build (no tags) = embedded data version ✅
+- Use `-tags=filesystem` for development with external files
+- Build tag warnings are normal - both versions build correctly
+
+**Verify both work:**
+```bash
+go build .                    # embedded version (default)
+go build -tags=filesystem .   # filesystem version (contributors)
+```
+
 ## Team Deployment
 
 ### For CLI Distribution
