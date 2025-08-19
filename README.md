@@ -19,11 +19,6 @@ go install github.com/shay23bra/pr-bot@latest
 # Add Go bin to PATH (if needed)  
 export PATH=$PATH:~/go/bin
 
-# Check what version you got
-pr-bot --data-source
-# Result: "Source: filesystem" (requires Excel file at data/ACM - Z Stream Release Schedule.xlsx)
-# Note: Only pre-built release binaries contain embedded data
-
 # Set up your API tokens
 export PR_BOT_GITHUB_TOKEN="your_github_token_here"
 export PR_BOT_GITLAB_TOKEN="your_gitlab_token_here" 
