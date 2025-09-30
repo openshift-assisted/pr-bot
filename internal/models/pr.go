@@ -120,9 +120,7 @@ type Config struct {
 	Owner         string `json:"owner"`
 	BranchPrefix  string `json:"branch_prefix"`
 	DefaultBranch string `json:"default_branch"`
-	SlackXOXD     string `json:"slack_xoxd"`
-	SlackXOXC     string `json:"slack_xoxc"`
-	SlackChannel  string `json:"slack_channel"`
+	SlackBotToken string `json:"slack_bot_token"`
 	GitLabToken   string `json:"gitlab_token"`
 	JiraToken     string `json:"jira_token"`
 }

@@ -40,17 +40,17 @@ PR_BOT_GITHUB_TOKEN=your_github_token_here
 PR_BOT_GITLAB_TOKEN=your_gitlab_token_here
 PR_BOT_JIRA_TOKEN=your_jira_token_here
 
-# Required for Slack bot server mode
-PR_BOT_SLACK_CHANNEL=your-channel
-PR_BOT_SLACK_XOXD=xoxd-token
-PR_BOT_SLACK_XOXC=xoxc-token
+# Required for Slack bot server mode (OAuth bot token)
+PR_BOT_SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 EOF
 
 # Start server
 pr-bot -server
 
-# Use in Slack
-/prbot pr https://github.com/openshift/assisted-service/pull/7788
+# Use in Slack (multiple ways)
+/pr https://github.com/openshift/assisted-service/pull/7788
+@pr-bot pr https://github.com/openshift/assisted-service/pull/7788
+# Or send direct message: pr https://github.com/openshift/assisted-service/pull/7788
 ```
 
 ## Features
@@ -234,31 +234,6 @@ gh release create v0.X.X --title "vX.X.X - Release Title" --notes "Release notes
 
 ⚠️ **Important**: Without a GitHub token, you're limited to 60 requests per hour and will get rate limited quickly when analyzing multiple branches.
 
-### Slack Token Setup (Optional)
-
-For Slack integration, you'll need browser tokens (xoxc and xoxd):
-
-1. **Get Browser Tokens**:
-   - Open Slack in your browser
-   - Open Developer Tools (F12)
-   - Go to Network tab
-   - Look for requests to `slack.com/api/`
-   - Find the `Authorization` header in the requests
-   - Copy the token values (they start with `xoxc-` and `xoxd-`)
-
-2. **Set them in .env file** (only needed for server mode):
-   ```bash
-   echo "PR_BOT_SLACK_XOXD=xoxd-your-browser-token-here" >> .env
-   echo "PR_BOT_SLACK_XOXC=xoxc-your-browser-token-here" >> .env
-   echo "PR_BOT_SLACK_CHANNEL=team-acm-downstream-notifcation" >> .env
-   ```
-
-**Important Notes:**
-- Browser tokens are session-based and may expire
-- The xoxc token is used to list channels
-- The xoxd token is used to read channel messages
-- Both tokens must be from the same Slack session
-- The channel name must match exactly (case-sensitive)
 
 ### JIRA Token Setup (Required for -jt flag)
 
@@ -492,30 +467,32 @@ Once the server is running, use these slash commands in Slack:
 
 ```bash
 # Show help
-/prbot help
+/info
 
 # Analyze a PR
-/prbot pr https://github.com/openshift/assisted-service/pull/1234
+/pr https://github.com/openshift/assisted-service/pull/1234
 
 # Analyze JIRA ticket  
-/prbot jira MGMT-20662
+/jt MGMT-20662
 
 # Compare versions (component required)
-/prbot version assisted-service v2.40.1
-/prbot version assisted-installer v2.44.0
-/prbot version mce assisted-service 2.8.0
-/prbot version mce assisted-installer 2.8.0
+/version assisted-service v2.40.1
+/version assisted-installer v2.44.0
+/version mce assisted-service 2.8.0
+/version mce assisted-installer 2.8.0
 ```
 
 #### Slack App Setup
 
+**Quick Setup:**
 1. **Create Slack App**: Go to [Slack Apps](https://api.slack.com/apps) and create a new app
-2. **Add Slash Command**: 
-   - Command: `/prbot`
-   - Request URL: `https://your-server.com/slack/commands`
-   - Description: "Analyze PRs and JIRA tickets"
-3. **Install App**: Install to your workspace
-4. **Configure Tokens**: Set environment variables with your app's tokens
+2. **Add Bot Scopes**: `app_mentions:read`, `channels:read`, `chat:write`, `im:read`, `im:write`, `commands`
+3. **Install App**: Install to your workspace and copy the Bot User OAuth Token
+4. **Configure Events**: Set event URL to `https://your-server.com/slack/events`
+5. **Add Slash Commands**: Create `/info`, `/pr`, `/jt`, `/version` → `https://your-server.com/slack/commands`
+6. **Set Token**: `PR_BOT_SLACK_BOT_TOKEN=xoxb-your-token`
+
+📖 **Detailed Setup Guide**: See [docs/SLACK_BOT_SETUP.md](docs/SLACK_BOT_SETUP.md) for complete instructions.
 
 ### 📋 Supported Repositories
 
@@ -922,26 +899,20 @@ For production use, always configure a GitHub token.
 
 ## Troubleshooting
 
-### Slack Authentication Issues
+### Slack Bot Issues
 
-If you get `invalid_auth` errors:
+If you have issues with the Slack bot:
 
-1. **Check token types**: Make sure you're using the correct browser tokens:
-   - `xoxc` should be your browser token for listing channels
-   - `xoxd` should be your browser token for reading channel messages
-
-2. **Verify scopes**: Ensure your Slack app has the required scopes:
-   - `channels:read` for the xoxc token
-   - `channels:history` for the xoxd token
-
-3. **Check installation**: Make sure the app is installed to your workspace
-
-4. **Verify channel name**: The channel name must match exactly (case-sensitive)
-
+1. **Check bot token**: Ensure `PR_BOT_SLACK_BOT_TOKEN` is set correctly
+2. **Verify scopes**: Make sure all required bot scopes are configured
+3. **Check installation**: Ensure the app is installed to your workspace
+4. **Test endpoints**: Verify your server is accessible at the configured URLs
 5. **Use debug mode**: Run with `-d` flag to see detailed error messages:
    ```bash
-   ./pr-bot -d -pr https://github.com/openshift/assisted-service/pull/1234
+   ./pr-bot -server -d
    ```
+
+See [docs/SLACK_BOT_SETUP.md](docs/SLACK_BOT_SETUP.md) for detailed troubleshooting.
 
 ## Contributing
 

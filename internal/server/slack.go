@@ -3,22 +3,27 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shay23bra/pr-bot/internal/jira"
 	"github.com/shay23bra/pr-bot/internal/logger"
 	"github.com/shay23bra/pr-bot/internal/models"
+	"github.com/shay23bra/pr-bot/internal/slack"
 	"github.com/shay23bra/pr-bot/pkg/analyzer"
 )
 
 // SlackServer handles Slack bot requests
 type SlackServer struct {
-	config   *models.Config
-	analyzer *analyzer.Analyzer
+	config    *models.Config
+	analyzer  *analyzer.Analyzer
+	botClient *slack.BotClient
+	botUserID string
 }
 
 // NewSlackServer creates a new Slack server instance
@@ -26,21 +31,33 @@ func NewSlackServer(cfg *models.Config) *SlackServer {
 	ctx := context.Background()
 	analyzer := analyzer.New(ctx, cfg)
 
+	var botClient *slack.BotClient
+	if cfg.SlackBotToken != "" {
+		botClient = slack.NewBotClient(cfg.SlackBotToken)
+		// Test authentication and get bot user ID
+		if err := botClient.TestAuth(ctx); err != nil {
+			logger.Debug("Failed to authenticate Slack bot: %v", err)
+		}
+	}
+
 	return &SlackServer{
-		config:   cfg,
-		analyzer: analyzer,
+		config:    cfg,
+		analyzer:  analyzer,
+		botClient: botClient,
 	}
 }
 
 // Start starts the Slack bot server
 func (s *SlackServer) Start(port int) error {
 	http.HandleFunc("/slack/commands", s.handleSlashCommand)
+	http.HandleFunc("/slack/events", s.handleEvents)
 	http.HandleFunc("/health", s.handleHealth)
 
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("🚀 Slack bot server starting on port %d\n", port)
 	fmt.Printf("📝 Endpoints:\n")
 	fmt.Printf("   POST /slack/commands - Slack slash commands\n")
+	fmt.Printf("   POST /slack/events   - Slack event subscriptions\n")
 	fmt.Printf("   GET  /health        - Health check\n")
 
 	return http.ListenAndServe(addr, nil)
@@ -79,10 +96,32 @@ func (s *SlackServer) handleSlashCommand(w http.ResponseWriter, r *http.Request)
 	var err error
 
 	switch command {
-	case "/pr-bot", "/prbot":
-		response, err = s.handlePRBotCommand(text)
+	case "/info":
+		response = s.getHelpMessage()
+	case "/pr":
+		if text == "" {
+			response = "❌ Usage: `/pr <PR_URL>`"
+		} else {
+			// Send immediate response and process async
+			go s.analyzePRAsync(text, r.FormValue("response_url"))
+			response = "🔍 Analyzing PR... This may take a moment. Results will appear shortly."
+		}
+	case "/jt":
+		if text == "" {
+			response = "❌ Usage: `/jt <JIRA_TICKET>`"
+		} else {
+			// Send immediate response and process async
+			go s.analyzeJiraTicketAsync(text, r.FormValue("response_url"))
+			response = "🔍 Analyzing JIRA ticket... This may take a moment. Results will appear shortly."
+		}
+	case "/version":
+		if text == "" {
+			response = "❌ Usage: `/version <COMPONENT> <VERSION>` or `/version mce <COMPONENT> <VERSION>`"
+		} else {
+			response, err = s.handleVersionCommand(text)
+		}
 	default:
-		response = fmt.Sprintf("Unknown command: %s", command)
+		response = fmt.Sprintf("Unknown command: %s\n\nUse `/info` to see available commands.", command)
 	}
 
 	if err != nil {
@@ -94,46 +133,6 @@ func (s *SlackServer) handleSlashCommand(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(response))
-}
-
-// handlePRBotCommand processes pr-bot slash commands
-func (s *SlackServer) handlePRBotCommand(text string) (string, error) {
-	if text == "" || text == "help" {
-		return s.getHelpMessage(), nil
-	}
-
-	args := strings.Fields(text)
-	if len(args) == 0 {
-		return s.getHelpMessage(), nil
-	}
-
-	command := args[0]
-
-	switch command {
-	case "pr":
-		if len(args) < 2 {
-			return "❌ Usage: `/prbot pr <PR_URL>`", nil
-		}
-		return s.analyzePR(args[1])
-
-	case "jira", "jt":
-		if len(args) < 2 {
-			return "❌ Usage: `/prbot jira <JIRA_TICKET>`", nil
-		}
-		return s.analyzeJiraTicket(args[1])
-
-	case "version", "v":
-		if len(args) < 2 {
-			return "❌ Usage: `/prbot version <VERSION>` or `/prbot version mce <VERSION>`", nil
-		}
-		if len(args) >= 3 && args[1] == "mce" {
-			return s.compareMCEVersion(args[2])
-		}
-		return s.compareVersion(args[1])
-
-	default:
-		return fmt.Sprintf("❌ Unknown command: %s\n\n%s", command, s.getHelpMessage()), nil
-	}
 }
 
 // analyzePR analyzes a PR via Slack
@@ -165,26 +164,159 @@ func (s *SlackServer) analyzePR(prURL string) (string, error) {
 
 // analyzeJiraTicket analyzes a JIRA ticket via Slack
 func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
-	// Extract JIRA ticket ID
-	ticketID := jira.ExtractMGMTTicketFromTitle(ticketURL)
+	// Extract JIRA ticket ID (supports any project prefix like ACM, MGMT, etc.)
+	ticketID := jira.ExtractJiraTicketFromText(ticketURL)
 	if ticketID == "" {
 		return "", fmt.Errorf("failed to extract JIRA ticket ID from: %s", ticketURL)
 	}
 
-	// TODO: Implement JIRA ticket analysis for Slack
-	return fmt.Sprintf("🚧 JIRA ticket analysis for %s is not yet implemented in Slack mode", ticketID), nil
+	// Check if JIRA token is configured
+	if s.config.JiraToken == "" {
+		return "", fmt.Errorf("JIRA token not configured. Please set PR_BOT_JIRA_TOKEN in your .env file")
+	}
+
+	// Create JIRA client
+	ctx := context.Background()
+	jiraClient := jira.NewClient(ctx, s.config.JiraToken)
+
+	// Get all related JIRA tickets (main ticket + cloned tickets)
+	allTicketIssues, err := jiraClient.GetAllClonedIssues(ticketID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get related JIRA tickets: %w", err)
+	}
+
+	// Extract ticket keys for display
+	allTicketKeys := make([]string, len(allTicketIssues))
+	for i, ticket := range allTicketIssues {
+		allTicketKeys[i] = ticket.Key
+	}
+
+	// Extract all PR URLs from all tickets
+	var allPRURLs []string
+	for _, ticket := range allTicketIssues {
+		prURLs := jiraClient.ExtractGitHubPRsFromIssue(ticket)
+		allPRURLs = append(allPRURLs, prURLs...)
+	}
+
+	// Remove duplicates and filter for supported repositories
+	prURLsMap := make(map[string]bool)
+	var uniquePRURLs []string
+
+	// Support assisted-service, assisted-installer, assisted-installer-agent, and assisted-installer-ui repositories
+	supportedRepos := []string{
+		fmt.Sprintf("github.com/%s/assisted-service/pull/", s.config.Owner),
+		fmt.Sprintf("github.com/%s/assisted-installer/pull/", s.config.Owner),
+		fmt.Sprintf("github.com/%s/assisted-installer-agent/pull/", s.config.Owner),
+		fmt.Sprintf("github.com/%s/assisted-installer-ui/pull/", s.config.Owner),
+	}
+
+	for _, prURL := range allPRURLs {
+		if prURLsMap[prURL] {
+			continue // Skip duplicates
+		}
+
+		// Check if PR is from a supported repository
+		isSupported := false
+		for _, supportedRepo := range supportedRepos {
+			if strings.Contains(prURL, supportedRepo) {
+				isSupported = true
+				break
+			}
+		}
+
+		if isSupported {
+			prURLsMap[prURL] = true
+			uniquePRURLs = append(uniquePRURLs, prURL)
+		}
+	}
+
+	// Create JIRA analysis result
+	jiraAnalysis := &models.JiraAnalysis{
+		MainTicket:      ticketID,
+		AllTickets:      allTicketKeys,
+		RelatedPRURLs:   uniquePRURLs,
+		AnalysisSuccess: true,
+	}
+
+	// Analyze each related PR
+	var relatedPRs []models.RelatedPR
+	for _, prURL := range uniquePRURLs {
+		// Parse PR URL to get number, owner, repo
+		prNumber, owner, repo, err := parsePRURL(prURL)
+		if err != nil {
+			logger.Debug("Failed to parse PR URL %s: %v", prURL, err)
+			continue
+		}
+
+		// Update config with repository info for this PR
+		originalOwner := s.config.Owner
+		originalRepo := s.config.Repository
+		s.config.Owner = owner
+		s.config.Repository = repo
+
+		// Create analyzer for this specific repository
+		analyzer := analyzer.New(ctx, s.config)
+
+		// Analyze the PR
+		result, err := analyzer.AnalyzePR(prNumber)
+		if err != nil {
+			logger.Debug("Failed to analyze PR %d: %v", prNumber, err)
+			// Restore original config
+			s.config.Owner = originalOwner
+			s.config.Repository = originalRepo
+			continue
+		}
+
+		// Create RelatedPR entry
+		relatedPR := models.RelatedPR{
+			Number:          result.PR.Number,
+			Title:           result.PR.Title,
+			URL:             result.PR.URL,
+			Hash:            result.PR.Hash,
+			JiraTickets:     []string{ticketID}, // Associate with the main ticket
+			ReleaseBranches: result.ReleaseBranches,
+		}
+		relatedPRs = append(relatedPRs, relatedPR)
+
+		// Restore original config
+		s.config.Owner = originalOwner
+		s.config.Repository = originalRepo
+	}
+
+	// Format response for Slack
+	return s.formatJiraAnalysisForSlack(jiraAnalysis, relatedPRs), nil
 }
 
-// compareVersion compares versions via Slack
-func (s *SlackServer) compareVersion(version string) (string, error) {
-	// TODO: Implement version comparison for Slack
-	return fmt.Sprintf("🚧 Version comparison for %s is not yet implemented in Slack mode", version), nil
+// handleVersionCommand handles version comparison commands
+func (s *SlackServer) handleVersionCommand(text string) (string, error) {
+	args := strings.Fields(text)
+	if len(args) < 2 {
+		return "❌ Usage: `/version <COMPONENT> <VERSION>` or `/version mce <COMPONENT> <VERSION>`\n\nAvailable components: assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui", nil
+	}
+
+	if len(args) >= 3 && args[0] == "mce" {
+		// MCE version comparison: /version mce assisted-service 2.8.0
+		component := args[1]
+		version := args[2]
+		return s.compareMCEVersionWithComponent(component, version)
+	} else {
+		// Regular version comparison: /version assisted-service v2.40.1
+		component := args[0]
+		version := args[1]
+		return s.compareVersionWithComponent(component, version)
+	}
 }
 
-// compareMCEVersion compares MCE versions via Slack
-func (s *SlackServer) compareMCEVersion(version string) (string, error) {
-	// TODO: Implement MCE version comparison for Slack
-	return fmt.Sprintf("🚧 MCE version comparison for %s is not yet implemented in Slack mode", version), nil
+// compareVersionWithComponent compares regular versions with component
+func (s *SlackServer) compareVersionWithComponent(component, version string) (string, error) {
+	// TODO: Implement regular version comparison for Slack with component
+	return fmt.Sprintf("🚧 Version comparison for %s %s is not yet implemented in Slack mode", component, version), nil
+}
+
+// compareMCEVersionWithComponent compares MCE versions with component
+func (s *SlackServer) compareMCEVersionWithComponent(component, version string) (string, error) {
+	// TODO: Implement MCE version comparison for Slack with component
+	return fmt.Sprintf("🚧 MCE version comparison for %s %s is not yet implemented in Slack mode", component, version), nil
 }
 
 // formatPRAnalysisForSlack formats PR analysis results for Slack
@@ -217,6 +349,17 @@ func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult) 
 			if branch.MergedAt != nil {
 				response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
 			}
+
+			// Add GA release information for ACM/MCE branches
+			if pattern == "release-ocm-" {
+				s.addGAInfoToSlackResponse(&response, branch)
+			}
+
+			// Add version tag information for version-prefixed branches
+			if len(branch.ReleasedVersions) > 0 {
+				response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", strings.Join(branch.ReleasedVersions, ", ")))
+			}
+
 			response.WriteString("\n")
 		}
 		response.WriteString("\n")
@@ -225,22 +368,225 @@ func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult) 
 	return response.String()
 }
 
+// addGAInfoToSlackResponse adds GA release information to the Slack response
+func (s *SlackServer) addGAInfoToSlackResponse(response *strings.Builder, branch models.BranchPresence) {
+	now := time.Now()
+
+	// Show upcoming GA versions (including released ones)
+	if len(branch.UpcomingGAs) > 0 {
+		// Track products to avoid duplicates
+		productStatus := make(map[string]bool)
+
+		// First pass: show released versions
+		for _, upcomingGA := range branch.UpcomingGAs {
+			if upcomingGA.GADate != nil && upcomingGA.GADate.Before(now) {
+				if !productStatus[upcomingGA.Product] {
+					productStatus[upcomingGA.Product] = true
+					response.WriteString(fmt.Sprintf("\n    🚀 %s %s: Released (GA: %s)",
+						upcomingGA.Product, upcomingGA.Version, models.FormatDate(upcomingGA.GADate)))
+				}
+			}
+		}
+
+		// Second pass: show upcoming releases for products without released versions
+		productNotReleased := make(map[string]bool)
+		for _, upcomingGA := range branch.UpcomingGAs {
+			if !productStatus[upcomingGA.Product] && !productNotReleased[upcomingGA.Product] {
+				productNotReleased[upcomingGA.Product] = true
+				response.WriteString(fmt.Sprintf("\n    ⏳ %s %s: Upcoming (GA: %s)",
+					upcomingGA.Product, upcomingGA.Version, models.FormatDate(upcomingGA.GADate)))
+			}
+		}
+	}
+
+	// Show latest GA status (already released versions from GAStatus)
+	hasLatestGA := (branch.GAStatus.ACM.Version != "" && branch.GAStatus.ACM.Status == "GA" &&
+		branch.GAStatus.ACM.GADate != nil && branch.GAStatus.ACM.GADate.Before(now)) ||
+		(branch.GAStatus.MCE.Version != "" && branch.GAStatus.MCE.Status == "GA" &&
+			branch.GAStatus.MCE.GADate != nil && branch.GAStatus.MCE.GADate.Before(now))
+
+	if hasLatestGA {
+		if branch.GAStatus.ACM.Version != "" && branch.GAStatus.ACM.Status == "GA" &&
+			branch.GAStatus.ACM.GADate != nil && branch.GAStatus.ACM.GADate.Before(now) {
+			response.WriteString(fmt.Sprintf("\n    ✅ ACM %s: Released (GA: %s)",
+				branch.GAStatus.ACM.Version, models.FormatDate(branch.GAStatus.ACM.GADate)))
+		}
+		if branch.GAStatus.MCE.Version != "" && branch.GAStatus.MCE.Status == "GA" &&
+			branch.GAStatus.MCE.GADate != nil && branch.GAStatus.MCE.GADate.Before(now) {
+			response.WriteString(fmt.Sprintf("\n    ✅ MCE %s: Released (GA: %s)",
+				branch.GAStatus.MCE.Version, models.FormatDate(branch.GAStatus.MCE.GADate)))
+		}
+	}
+}
+
+// formatJiraAnalysisForSlack formats JIRA analysis results for Slack
+func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalysis, relatedPRs []models.RelatedPR) string {
+	var response strings.Builder
+
+	response.WriteString(fmt.Sprintf("🎫 *JIRA Ticket Analysis: %s*\n", jiraAnalysis.MainTicket))
+
+	if len(jiraAnalysis.AllTickets) > 1 {
+		response.WriteString(fmt.Sprintf("🔗 Related tickets: %s\n", strings.Join(jiraAnalysis.AllTickets[1:], ", ")))
+	}
+
+	response.WriteString(fmt.Sprintf("📊 Found %d related PRs\n\n", len(relatedPRs)))
+
+	if len(relatedPRs) == 0 {
+		response.WriteString("❌ No related PRs found in supported repositories\n")
+		response.WriteString("💡 Supported repos: assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui\n")
+		return response.String()
+	}
+
+	response.WriteString("🔗 *Related PRs:*\n")
+	for i, relatedPR := range relatedPRs {
+		response.WriteString(fmt.Sprintf("*%d. PR #%d*\n", i+1, relatedPR.Number))
+		response.WriteString(fmt.Sprintf("🔗 %s\n", relatedPR.URL))
+		response.WriteString(fmt.Sprintf("📝 %s\n", relatedPR.Title))
+
+		// Check if PR is in any release branches
+		foundBranches := []models.BranchPresence{}
+		for _, branch := range relatedPR.ReleaseBranches {
+			if branch.Found {
+				foundBranches = append(foundBranches, branch)
+			}
+		}
+
+		if len(foundBranches) == 0 {
+			response.WriteString("❌ Not found in any release branches\n")
+		} else {
+			response.WriteString("✅ *Found in release branches:*\n")
+
+			// Group branches by pattern
+			branchGroups := make(map[string][]models.BranchPresence)
+			for _, branch := range foundBranches {
+				branchGroups[branch.Pattern] = append(branchGroups[branch.Pattern], branch)
+			}
+
+			for pattern, branches := range branchGroups {
+				response.WriteString(fmt.Sprintf("  📂 *%s branches:*\n", getPatternName(pattern)))
+				for _, branch := range branches {
+					response.WriteString(fmt.Sprintf("    • `%s` (v%s)", branch.BranchName, branch.Version))
+					if branch.MergedAt != nil {
+						response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
+					}
+
+					// Add GA release information for ACM/MCE branches
+					if pattern == "release-ocm-" {
+						s.addGAInfoToSlackResponse(&response, branch)
+					}
+
+					// Add version tag information for version-prefixed branches
+					if len(branch.ReleasedVersions) > 0 {
+						response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", strings.Join(branch.ReleasedVersions, ", ")))
+					}
+
+					response.WriteString("\n")
+				}
+			}
+		}
+		response.WriteString("\n")
+	}
+
+	// Summary
+	totalBranches := 0
+	for _, relatedPR := range relatedPRs {
+		for _, branch := range relatedPR.ReleaseBranches {
+			if branch.Found {
+				totalBranches++
+			}
+		}
+	}
+
+	response.WriteString(fmt.Sprintf("📋 *Summary:* %d PRs analyzed, %d release branch entries found\n", len(relatedPRs), totalBranches))
+
+	return response.String()
+}
+
+// analyzePRAsync analyzes a PR asynchronously and sends result via response_url
+func (s *SlackServer) analyzePRAsync(prURL, responseURL string) {
+	// Perform the analysis
+	result, err := s.analyzePR(prURL)
+
+	var message string
+	if err != nil {
+		message = fmt.Sprintf("❌ Error analyzing PR: %v", err)
+	} else {
+		message = result
+	}
+
+	// Send the result back to Slack using response_url
+	s.sendDelayedResponse(responseURL, message)
+}
+
+// analyzeJiraTicketAsync analyzes a JIRA ticket asynchronously and sends result via response_url
+func (s *SlackServer) analyzeJiraTicketAsync(ticketURL, responseURL string) {
+	// Perform the analysis
+	result, err := s.analyzeJiraTicket(ticketURL)
+
+	var message string
+	if err != nil {
+		message = fmt.Sprintf("❌ Error analyzing JIRA ticket: %v", err)
+	} else {
+		message = result
+	}
+
+	// Send the result back to Slack using response_url
+	s.sendDelayedResponse(responseURL, message)
+}
+
+// sendDelayedResponse sends a delayed response to Slack using response_url
+func (s *SlackServer) sendDelayedResponse(responseURL, message string) {
+	if responseURL == "" {
+		logger.Debug("No response URL provided for delayed response")
+		return
+	}
+
+	payload := map[string]interface{}{
+		"text":          message,
+		"response_type": "in_channel", // or "ephemeral" for private response
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		logger.Debug("Failed to marshal delayed response: %v", err)
+		return
+	}
+
+	resp, err := http.Post(responseURL, "application/json", strings.NewReader(string(jsonData)))
+	if err != nil {
+		logger.Debug("Failed to send delayed response: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Debug("Delayed response failed with status: %d", resp.StatusCode)
+	}
+}
+
 // getHelpMessage returns the help message for Slack commands
 func (s *SlackServer) getHelpMessage() string {
-	return `🤖 *PR Bot Help*
+	return `🤖 *PR Bot Commands*
 
-*Commands:*
-• ` + "`" + `/prbot pr <PR_URL>` + "`" + ` - Analyze a PR across release branches
-• ` + "`" + `/prbot jira <JIRA_TICKET>` + "`" + ` - Analyze all PRs related to a JIRA ticket
-• ` + "`" + `/prbot version <VERSION>` + "`" + ` - Compare GitHub tag with previous version
-• ` + "`" + `/prbot version mce <VERSION>` + "`" + ` - Compare MCE version with previous version
-• ` + "`" + `/prbot help` + "`" + ` - Show this help message
+*Available Slash Commands:*
+• ` + "`" + `/info` + "`" + ` - Show this help message
+• ` + "`" + `/pr <PR_URL>` + "`" + ` - Analyze a PR across release branches
+• ` + "`" + `/jt <JIRA_TICKET>` + "`" + ` - Analyze all PRs related to a JIRA ticket
+• ` + "`" + `/version <COMPONENT> <VERSION>` + "`" + ` - Compare GitHub tag with previous version
+• ` + "`" + `/version mce <COMPONENT> <VERSION>` + "`" + ` - Compare MCE version with previous version
 
 *Examples:*
-• ` + "`" + `/prbot pr https://github.com/openshift/assisted-service/pull/7788` + "`" + `
-• ` + "`" + `/prbot jira MGMT-20662` + "`" + `
-• ` + "`" + `/prbot version v2.40.1` + "`" + `
-• ` + "`" + `/prbot version mce 2.8.1` + "`"
+• ` + "`" + `/pr https://github.com/openshift/assisted-service/pull/7788` + "`" + `
+• ` + "`" + `/jt MGMT-20662` + "`" + ` or ` + "`" + `/jt ACM-22787` + "`" + `
+• ` + "`" + `/jt https://issues.redhat.com/browse/ACM-22787` + "`" + `
+• ` + "`" + `/version assisted-service v2.40.1` + "`" + `
+• ` + "`" + `/version mce assisted-service 2.8.0` + "`" + `
+
+*Available Components:*
+• assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui
+
+*Alternative Usage:*
+You can also mention the bot (` + "`" + `@pr-bot` + "`" + `) or send direct messages using the same command syntax without the slash.`
 }
 
 // getPatternName returns a user-friendly name for branch patterns
@@ -296,4 +642,140 @@ func parsePRURL(prURL string) (int, string, string, error) {
 	}
 
 	return prNumber, owner, repo, nil
+}
+
+// handleEvents handles Slack event subscriptions
+func (s *SlackServer) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		Token     string       `json:"token"`
+		Challenge string       `json:"challenge"`
+		Type      string       `json:"type"`
+		Event     *slack.Event `json:"event,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		logger.Debug("Failed to decode event payload: %v", err)
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Handle URL verification challenge
+	if payload.Type == "url_verification" {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(payload.Challenge))
+		return
+	}
+
+	// Handle event callbacks
+	if payload.Type == "event_callback" && payload.Event != nil {
+		go s.processSlackEvent(payload.Event)
+	}
+
+	// Acknowledge the event
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
+}
+
+// processSlackEvent processes incoming Slack events
+func (s *SlackServer) processSlackEvent(event *slack.Event) {
+	if s.botClient == nil {
+		logger.Debug("Bot client not configured, ignoring event")
+		return
+	}
+
+	ctx := context.Background()
+
+	// Ignore bot messages to prevent loops
+	if event.BotID != "" {
+		return
+	}
+
+	// Handle different event types
+	switch event.Type {
+	case "app_mention":
+		s.handleMention(ctx, event)
+	case "message":
+		// Only handle direct messages
+		if event.IsDirectMessage() {
+			s.handleDirectMessage(ctx, event)
+		}
+	}
+}
+
+// handleMention handles when the bot is mentioned in a channel
+func (s *SlackServer) handleMention(ctx context.Context, event *slack.Event) {
+	command := event.ExtractCommand(s.botUserID)
+	response, err := s.handleTextCommand(command)
+
+	if err != nil {
+		response = fmt.Sprintf("❌ Error: %v", err)
+	}
+
+	// Post response in thread
+	if err := s.botClient.PostThreadReply(ctx, event.Channel, response, event.Timestamp); err != nil {
+		logger.Debug("Failed to post thread reply: %v", err)
+	}
+}
+
+// handleDirectMessage handles direct messages to the bot
+func (s *SlackServer) handleDirectMessage(ctx context.Context, event *slack.Event) {
+	response, err := s.handleTextCommand(event.Text)
+
+	if err != nil {
+		response = fmt.Sprintf("❌ Error: %v", err)
+	}
+
+	// Post response in DM
+	if err := s.botClient.PostSimpleMessage(ctx, event.Channel, response); err != nil {
+		logger.Debug("Failed to post DM response: %v", err)
+	}
+}
+
+// handleTextCommand handles text-based commands (from mentions or DMs)
+func (s *SlackServer) handleTextCommand(text string) (string, error) {
+	text = strings.TrimSpace(text)
+
+	if text == "" || text == "help" || text == "info" {
+		return s.getHelpMessage(), nil
+	}
+
+	args := strings.Fields(text)
+	if len(args) == 0 {
+		return s.getHelpMessage(), nil
+	}
+
+	command := args[0]
+	commandText := ""
+	if len(args) > 1 {
+		commandText = strings.Join(args[1:], " ")
+	}
+
+	switch command {
+	case "pr":
+		if commandText == "" {
+			return "❌ Usage: `pr <PR_URL>`", nil
+		}
+		return s.analyzePR(commandText)
+
+	case "jt", "jira":
+		if commandText == "" {
+			return "❌ Usage: `jt <JIRA_TICKET>`", nil
+		}
+		return s.analyzeJiraTicket(commandText)
+
+	case "version", "v":
+		if commandText == "" {
+			return "❌ Usage: `version <COMPONENT> <VERSION>` or `version mce <COMPONENT> <VERSION>`", nil
+		}
+		return s.handleVersionCommand(commandText)
+
+	default:
+		return fmt.Sprintf("❌ Unknown command: %s\n\nUse `info` or `help` to see available commands.", command), nil
+	}
 }

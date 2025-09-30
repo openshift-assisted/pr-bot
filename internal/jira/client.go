@@ -258,10 +258,46 @@ func (c *Client) ExtractGitHubPRsFromIssue(issue JiraIssue) []string {
 
 // ExtractMGMTTicketFromTitle extracts MGMT ticket number from PR title.
 func ExtractMGMTTicketFromTitle(title string) string {
-	re := regexp.MustCompile(`MGMT-(\d+)`)
-	matches := re.FindStringSubmatch(title)
+	return ExtractJiraTicketWithPrefix(title, "MGMT")
+}
+
+// ExtractJiraTicketFromText extracts JIRA ticket from text with any project prefix.
+// It supports URLs like https://issues.redhat.com/browse/ACM-22787 and direct ticket IDs like MGMT-20662
+func ExtractJiraTicketFromText(text string) string {
+	// First try to extract from JIRA URL format
+	urlRegex := regexp.MustCompile(`https://issues\.redhat\.com/browse/([A-Z]+-\d+)`)
+	matches := urlRegex.FindStringSubmatch(text)
 	if len(matches) >= 2 {
-		return "MGMT-" + matches[1]
+		return matches[1]
 	}
+
+	// Then try to extract direct ticket format (PROJECT-NUMBER)
+	ticketRegex := regexp.MustCompile(`([A-Z]+-\d+)`)
+	matches = ticketRegex.FindStringSubmatch(text)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+
+	return ""
+}
+
+// ExtractJiraTicketWithPrefix extracts JIRA ticket from text with specific project prefix.
+func ExtractJiraTicketWithPrefix(text, projectPrefix string) string {
+	// First try to extract from JIRA URL format
+	urlPattern := fmt.Sprintf(`https://issues\.redhat\.com/browse/(%s-\d+)`, projectPrefix)
+	urlRegex := regexp.MustCompile(urlPattern)
+	matches := urlRegex.FindStringSubmatch(text)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+
+	// Then try to extract direct ticket format
+	ticketPattern := fmt.Sprintf(`(%s-\d+)`, projectPrefix)
+	ticketRegex := regexp.MustCompile(ticketPattern)
+	matches = ticketRegex.FindStringSubmatch(text)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+
 	return ""
 }

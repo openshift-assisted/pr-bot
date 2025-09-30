@@ -17,7 +17,6 @@ import (
 	"github.com/shay23bra/pr-bot/internal/jira"
 	"github.com/shay23bra/pr-bot/internal/logger"
 	"github.com/shay23bra/pr-bot/internal/models"
-	"github.com/shay23bra/pr-bot/internal/slack"
 )
 
 // Constants for the analyzer package.
@@ -34,7 +33,6 @@ type Analyzer struct {
 	githubClient *github.Client
 	config       *models.Config
 	gaParser     *ga.Parser
-	slackClient  *slack.Client
 	gitlabClient *gitlab.Client
 	jiraClient   *jira.Client
 
@@ -47,7 +45,7 @@ type Analyzer struct {
 func New(ctx context.Context, config *models.Config) *Analyzer {
 	githubClient := github.NewClient(ctx, config.GitHubToken)
 	gaParser := ga.NewParser(ExcelFilePath)
-	slackClient := slack.New(config.SlackXOXD, config.SlackXOXC)
+	// Slack integration is now handled by the server component
 
 	var gitlabClient *gitlab.Client
 	if config.GitLabToken != "" {
@@ -63,7 +61,6 @@ func New(ctx context.Context, config *models.Config) *Analyzer {
 		githubClient: githubClient,
 		config:       config,
 		gaParser:     gaParser,
-		slackClient:  slackClient,
 		gitlabClient: gitlabClient,
 		jiraClient:   jiraClient,
 	}
@@ -477,102 +474,6 @@ func extractPRNumberFromURL(url string) int {
 		}
 	}
 	return 0
-}
-
-// SearchSlackMessages searches for PR-related messages in the configured Slack channel.
-func (a *Analyzer) SearchSlackMessages(ctx context.Context, limit int) ([]slack.SearchResult, error) {
-	if a.config.SlackChannel == "" {
-		return nil, fmt.Errorf("slack channel not configured")
-	}
-
-	if a.config.SlackXOXD == "" || a.config.SlackXOXC == "" {
-		return nil, fmt.Errorf("slack tokens not configured")
-	}
-
-	logger.Debug("Searching Slack channel: %s", a.config.SlackChannel)
-
-	// Get channel ID
-	channelID, err := a.slackClient.GetChannelID(ctx, a.config.SlackChannel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get channel ID: %w", err)
-	}
-
-	logger.Debug("Found channel ID: %s", channelID)
-
-	// Get messages from channel
-	messages, err := a.slackClient.GetChannelMessages(ctx, channelID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get channel messages: %w", err)
-	}
-
-	logger.Debug("Retrieved %d messages from Slack channel", len(messages))
-
-	// Search for PR-related messages
-	results := a.slackClient.SearchPRMessages(messages, a.config.SlackChannel)
-
-	logger.Debug("Found %d PR-related messages", len(results))
-
-	return results, nil
-}
-
-// FindLatestVersionMessage finds the latest message containing a specific version and Upstream SHA list link.
-func (a *Analyzer) FindLatestVersionMessage(ctx context.Context, targetVersion string, limit int) (*slack.VersionMessage, error) {
-	if a.config.SlackChannel == "" {
-		return nil, fmt.Errorf("slack channel not configured")
-	}
-
-	if a.config.SlackXOXD == "" || a.config.SlackXOXC == "" {
-		return nil, fmt.Errorf("slack tokens not configured")
-	}
-
-	logger.Debug("Searching for version %s in Slack channel: %s", targetVersion, a.config.SlackChannel)
-
-	// Get channel ID
-	channelID, err := a.slackClient.GetChannelID(ctx, a.config.SlackChannel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get channel ID: %w", err)
-	}
-
-	logger.Debug("Found channel ID: %s", channelID)
-
-	// Get messages from channel
-	messages, err := a.slackClient.GetChannelMessages(ctx, channelID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get channel messages: %w", err)
-	}
-
-	logger.Debug("Retrieved %d messages from Slack channel", len(messages))
-
-	// Find the latest message with the target version and Upstream SHA list
-	versionMessage := a.slackClient.FindLatestVersionMessage(messages, a.config.SlackChannel, targetVersion)
-
-	if versionMessage != nil {
-		logger.Debug("Found latest message for version %s: %s", targetVersion, versionMessage.Timestamp.Format("2006-01-02 15:04:05"))
-	} else {
-		logger.Debug("No message found for version %s with Upstream SHA list", targetVersion)
-	}
-
-	return versionMessage, nil
-}
-
-// TestSlackAuth tests Slack authentication and shows available scopes
-func (a *Analyzer) TestSlackAuth(ctx context.Context) error {
-	if a.config.SlackChannel == "" {
-		return fmt.Errorf("slack channel not configured")
-	}
-
-	if a.config.SlackXOXD == "" || a.config.SlackXOXC == "" {
-		return fmt.Errorf("slack tokens not configured")
-	}
-
-	logger.Debug("Testing Slack authentication")
-
-	// Test authentication
-	if err := a.slackClient.TestAuth(ctx); err != nil {
-		return fmt.Errorf("slack authentication failed: %w", err)
-	}
-
-	return nil
 }
 
 // PrintSummary prints a formatted summary of the analysis result.

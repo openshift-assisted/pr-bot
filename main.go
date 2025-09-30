@@ -82,6 +82,7 @@ func main() {
 	prFlag := flag.String("pr", "", "Analyze a specific PR by URL")
 	jiraTicketFlag := flag.String("jt", "", "Analyze all PRs related to a JIRA ticket")
 	serverFlag := flag.Bool("server", false, "Run as Slack bot server")
+	portFlag := flag.Int("port", 8080, "Port for Slack bot server (default: 8080)")
 	versionOnlyFlag := flag.Bool("version", false, "Show version and exit")
 	dataSourceFlag := flag.Bool("data-source", false, "Show data source information and exit")
 
@@ -104,6 +105,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -v <component> <version>  Compare GitHub tag with previous version for specific component\n")
 		fmt.Fprintf(os.Stderr, "  -v mce <component> <version>  Compare MCE version with previous version for specific component\n")
 		fmt.Fprintf(os.Stderr, "  -server           Run as Slack bot server\n")
+		fmt.Fprintf(os.Stderr, "  -port <PORT>      Port for Slack bot server (default: 8080)\n")
 		fmt.Fprintf(os.Stderr, "  -version          Show version and exit\n")
 		fmt.Fprintf(os.Stderr, "  -d                Enable debug logging\n")
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
@@ -150,7 +152,7 @@ func main() {
 
 	// Handle server mode
 	if *serverFlag {
-		startSlackServer()
+		startSlackServer(*portFlag)
 		return
 	}
 
@@ -1232,7 +1234,7 @@ func parseVersionNumber(version string) float64 {
 }
 
 // startSlackServer starts the Slack bot server
-func startSlackServer() {
+func startSlackServer(port int) {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -1241,9 +1243,6 @@ func startSlackServer() {
 
 	// Create and start Slack server
 	slackServer := server.NewSlackServer(cfg)
-
-	// Default port
-	port := 8080
 
 	fmt.Printf("🤖 Starting Slack bot server on port %d...\n", port)
 	if err := slackServer.Start(port); err != nil {

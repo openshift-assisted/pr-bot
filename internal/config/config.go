@@ -58,9 +58,7 @@ func Load() (*models.Config, error) {
 		Owner:         viper.GetString("github.owner"),
 		BranchPrefix:  viper.GetString("github.branch_prefix"),
 		DefaultBranch: viper.GetString("github.default_branch"),
-		SlackXOXD:     viper.GetString("slack.xoxd"),
-		SlackXOXC:     viper.GetString("slack.xoxc"),
-		SlackChannel:  viper.GetString("slack.channel"),
+		SlackBotToken: viper.GetString("slack.bot_token"),
 		GitLabToken:   gitlabToken,
 		JiraToken:     jiraToken,
 	}
@@ -84,20 +82,10 @@ func PrintConfig(config *models.Config) {
 	} else {
 		fmt.Printf("  GitHub Token: (not configured)\n")
 	}
-	if config.SlackXOXD != "" {
-		fmt.Printf("  Slack XOXD Token: ********** (configured)\n")
+	if config.SlackBotToken != "" {
+		fmt.Printf("  Slack Bot Token: ********** (configured)\n")
 	} else {
-		fmt.Printf("  Slack XOXD Token: (not configured)\n")
-	}
-	if config.SlackXOXC != "" {
-		fmt.Printf("  Slack XOXC Token: ********** (configured)\n")
-	} else {
-		fmt.Printf("  Slack XOXC Token: (not configured)\n")
-	}
-	if config.SlackChannel != "" {
-		fmt.Printf("  Slack Channel: %s\n", config.SlackChannel)
-	} else {
-		fmt.Printf("  Slack Channel: (not configured)\n")
+		fmt.Printf("  Slack Bot Token: (not configured)\n")
 	}
 }
 
@@ -108,9 +96,7 @@ func setDefaults() {
 	viper.SetDefault("github.owner", "openshift")
 	viper.SetDefault("github.branch_prefix", "release-ocm-")
 	viper.SetDefault("github.default_branch", "master")
-	viper.SetDefault("slack.xoxd", "")
-	viper.SetDefault("slack.xoxc", "")
-	viper.SetDefault("slack.channel", "team-acm-downstream-notifcation")
+	viper.SetDefault("slack.bot_token", "")
 	viper.SetDefault("gitlab_token", "")
 	viper.SetDefault("jira_token", "")
 }
