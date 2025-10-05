@@ -460,11 +460,17 @@ func (p *Parser) parseDateFromText(text string) *time.Time {
 	// Try month/day format (like "5/14", "6/4")
 	if matched, _ := regexp.MatchString(`^\d{1,2}/\d{1,2}$`, text); matched {
 		currentYear := time.Now().Year()
+		now := time.Now()
 
 		// Try current year first
 		if date, err := time.Parse("1/2/2006", text+"/"+fmt.Sprintf("%d", currentYear)); err == nil {
-			// If the date has already passed this year, assume next year
-			if date.Before(time.Now()) {
+			// For dates in the current year, use a more intelligent logic:
+			// - If the date is more than 6 months in the past, it's likely for next year
+			// - If the date is within 6 months (past or future), it's likely for current year
+			sixMonthsAgo := now.AddDate(0, -6, 0)
+			
+			if date.Before(sixMonthsAgo) {
+				// Date is more than 6 months ago, assume next year
 				if dateNextYear, err := time.Parse("1/2/2006", text+"/"+fmt.Sprintf("%d", currentYear+1)); err == nil {
 					return &dateNextYear
 				}
