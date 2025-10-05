@@ -123,4 +123,6 @@ type Config struct {
 	SlackBotToken string `json:"slack_bot_token"`
 	GitLabToken   string `json:"gitlab_token"`
 	JiraToken     string `json:"jira_token"`
+	GoogleAPIKey  string `json:"google_api_key"`
+	GoogleSheetID string `json:"google_sheet_id"`
 }

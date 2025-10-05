@@ -42,6 +42,10 @@ PR_BOT_JIRA_TOKEN=your_jira_token_here
 
 # Required for Slack bot server mode (OAuth bot token)
 PR_BOT_SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+
+# Optional: Google Sheets for real-time GA data (recommended)
+PR_BOT_GOOGLE_API_KEY=your_google_api_key_here
+PR_BOT_GOOGLE_SHEET_ID=your_google_sheet_id_here
 EOF
 
 # Start server
@@ -67,7 +71,8 @@ pr-bot -server
 - **MCE Validation**: Verify commits against MCE GitLab snapshots with SHA extraction
 
 ### 📅 Release Management
-- **GA Status Tracking**: Analyze General Availability status by reading ACM/MCE release schedules from Excel files
+- **GA Status Tracking**: Analyze General Availability status from Google Sheets or Excel files
+- **Real-time Data**: Google Sheets integration provides live release schedule updates
 - **Release Schedule Integration**: Parse "In Progress" and "ACM MCE Completed" tabs to determine GA dates
 - **Version Comparison**: Compare MCE/GitHub versions to track changes between releases with required component-specific analysis
 
@@ -79,28 +84,40 @@ pr-bot -server
 
 ## 🔒 Data Source Architecture
 
-This tool uses an **embedded data approach** that allows the repository to be **public** while keeping sensitive data **private**:
+This tool supports **multiple data source options** to provide flexibility while keeping sensitive data secure:
 
-### 📊 **How It Works**
-1. **Public Repository**: Source code is open for collaboration
-2. **Private Data**: Excel file stays private (not in repo)
-3. **Releases Include Data**: Built with embedded data by maintainers
-4. **Ready to Use**: `go install` gives users embedded data automatically
+### 📊 **Data Source Options**
 
-### 🎯 **Simple Model**
+#### 🌐 **Google Sheets (Recommended)**
+- **Real-time Data**: Always uses the latest release schedule
+- **Easy Updates**: Maintainers can update data without rebuilding
+- **Secure Access**: Uses Google API key authentication
+- **No Embedding**: No need to embed data in binaries
 
-| Who | What They Get | How |
+#### 📁 **Embedded Excel (Legacy)**
+- **Offline Access**: Works without internet connection
+- **Embedded Data**: Excel file built into the binary
+- **Private Data**: Excel file stays private (not in repo)
+
+### 🎯 **Data Source Priority**
+1. **Google Sheets** (if `PR_BOT_GOOGLE_API_KEY` and `PR_BOT_GOOGLE_SHEET_ID` are configured)
+2. **Embedded Excel** (if built with `-tags=embedded`)
+3. **Filesystem Excel** (fallback to `data/ACM - Z Stream Release Schedule.xlsx`)
+
+### 🚀 **Setup Options**
+
+| Who | Recommended Setup | How |
 |-----|---------------|-----|
-| **👥 Users** | Get maintainer-built binaries | Download from releases or `go install` |
-| **🔧 Contributors** | Filesystem version | `go build` (default) |
-| **👤 Maintainers** | Can build embedded releases | `go build -tags=embedded` + have Excel file |
+| **👥 Production Users** | Google Sheets API | Get API key + use live Google Sheet |
+| **🔧 Contributors** | Filesystem Excel | `go build` + provide Excel file |
+| **👤 Maintainers** | Google Sheets or Embedded | API key or `go build -tags=embedded` |
 
 ### ⚡ **Benefits**
-- ✅ **Instant Use**: `go install` works immediately with embedded data
-- ✅ **Public Repository**: Anyone can view source, contribute, fork
-- ✅ **Private Data**: Excel file never exposed publicly
-- ✅ **Zero Dependencies**: Released binaries work anywhere
-- ✅ **Contributor Friendly**: Development builds available without data
+- ✅ **Real-time Updates**: Google Sheets provides live data
+- ✅ **Easy Maintenance**: Update data without rebuilding
+- ✅ **Flexible Deployment**: Multiple data source options
+- ✅ **Secure Access**: API key authentication
+- ✅ **Backward Compatible**: Still supports embedded Excel
 
 ### 🔍 **Check Your Version**
 ```bash
@@ -288,6 +305,42 @@ For MCE snapshot validation (used in PR analysis and version comparison), you'll
 - Enables version comparison features (`-v` flag)
 - Token should have `read_api` scope to access MCE repository files
 
+### Google Sheets Setup (Recommended for GA Data)
+
+For real-time GA release schedule data, you can configure Google Sheets API access:
+
+1. **Get Google API Key**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project or select an existing one
+   - Enable the "Google Sheets API"
+   - Go to "Credentials" → "Create Credentials" → "API Key"
+   - Copy the generated API key
+   - (Optional) Restrict the key to "Google Sheets API" for security
+
+2. **Get Google Sheet ID**:
+   - Open your Google Sheet (e.g., ACM/MCE release schedule)
+   - Copy the Sheet ID from the URL: `https://docs.google.com/spreadsheets/d/SHEET_ID_HERE/edit`
+   - Make sure the sheet is accessible with the API key (either public or shared)
+
+3. **Set as environment variables**:
+   - **For CLI usage:**
+     ```bash
+     export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
+     export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
+     ```
+   - **For Slack server usage (add to .env file):**
+     ```bash
+     echo "PR_BOT_GOOGLE_API_KEY=your-google-api-key" >> .env
+     echo "PR_BOT_GOOGLE_SHEET_ID=your-google-sheet-id" >> .env
+     ```
+
+**Important Notes:**
+- **Recommended**: Provides real-time data without rebuilding binaries
+- **Sheet Structure**: Must have "In Progress" and "ACM MCE Completed " tabs (same as Excel format)
+- **Fallback**: If not configured, falls back to embedded Excel data
+- **Priority**: Google Sheets takes priority over embedded Excel when configured
+- **Security**: Keep your API key secure and consider IP restrictions
+
 ### Setup
 
 ```bash
@@ -342,15 +395,24 @@ The tool can be configured through environment variables, config files, or comma
 ### Environment Variables
 
 ```bash
+# GitHub Configuration (Required)
 export PR_BOT_GITHUB_TOKEN="your-github-token"
 export PR_BOT_GITHUB_OWNER="openshift"
 export PR_BOT_GITHUB_REPOSITORY="assisted-service"
 export PR_BOT_GITHUB_BRANCH_PREFIX="release-ocm-"
 export PR_BOT_GITHUB_DEFAULT_BRANCH="master"
-export PR_BOT_SLACK_XOXD="xoxd-your-browser-token-here"
-export PR_BOT_SLACK_XOXC="xoxc-your-browser-token-here"
-export PR_BOT_SLACK_CHANNEL="team-acm-downstream-notifcation"
+
+# Slack Bot Configuration (Required for Slack mode)
+export PR_BOT_SLACK_BOT_TOKEN="xoxb-your-bot-token-here"
+
+# Google Sheets Configuration (Recommended for GA data)
+export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
+export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
+
+# GitLab Configuration (Optional for MCE validation)
 export PR_BOT_GITLAB_TOKEN="your-gitlab-token-here"
+
+# JIRA Configuration (Required for JIRA ticket analysis)
 export PR_BOT_JIRA_TOKEN="your-jira-token-here"
 ```
 

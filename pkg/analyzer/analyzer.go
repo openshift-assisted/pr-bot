@@ -44,7 +44,21 @@ type Analyzer struct {
 // New creates a new analyzer instance.
 func New(ctx context.Context, config *models.Config) *Analyzer {
 	githubClient := github.NewClient(ctx, config.GitHubToken)
-	gaParser := ga.NewParser(ExcelFilePath)
+
+	// Create GA parser - use Google Sheets if configured, otherwise use Excel file
+	var gaParser *ga.Parser
+	if config.GoogleAPIKey != "" && config.GoogleSheetID != "" {
+		logger.Debug("Using Google Sheets for GA data (Sheet ID: %s)", config.GoogleSheetID)
+		var err error
+		gaParser, err = ga.NewSheetsParser(config.GoogleAPIKey, config.GoogleSheetID)
+		if err != nil {
+			logger.Debug("Failed to create Google Sheets parser, falling back to Excel: %v", err)
+			gaParser = ga.NewParser(ExcelFilePath)
+		}
+	} else {
+		logger.Debug("Using Excel file for GA data")
+		gaParser = ga.NewParser(ExcelFilePath)
+	}
 	// Slack integration is now handled by the server component
 
 	var gitlabClient *gitlab.Client

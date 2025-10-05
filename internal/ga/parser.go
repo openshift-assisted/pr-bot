@@ -34,9 +34,10 @@ const (
 	MCEVersionOffset = 5 // MCE version is 5 versions behind ACM
 )
 
-// Parser handles GA status parsing from Excel files.
+// Parser handles GA status parsing from Excel files or Google Sheets.
 type Parser struct {
-	filePath string
+	filePath     string
+	sheetsClient *SheetsClient
 
 	// Background parsing and caching
 	cache        *parsedData
@@ -67,66 +68,103 @@ func NewParser(filePath string) *Parser {
 	return p
 }
 
-// backgroundParse parses the Excel file in the background and caches the results.
+// NewSheetsParser creates a new GA parser that uses Google Sheets API.
+func NewSheetsParser(apiKey, sheetID string) (*Parser, error) {
+	sheetsClient, err := NewSheetsClient(apiKey, sheetID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sheets client: %w", err)
+	}
+
+	p := &Parser{
+		sheetsClient: sheetsClient,
+		parseChannel: make(chan struct{}),
+	}
+
+	// Start background parsing
+	go p.backgroundParse()
+
+	return p, nil
+}
+
+// backgroundParse parses the data source (Excel file or Google Sheets) in the background and caches the results.
 func (p *Parser) backgroundParse() {
 	p.parseOnce.Do(func() {
-		logger.Debug("Starting background Excel file parsing")
 		start := time.Now()
 
-		var f *excelize.File
+		var inProgressReleases, completedReleases []ReleaseInfo
 		var err error
-		var cleanup func()
 
-		// Try embedded data first
-		if embedded.HasEmbeddedData() {
-			logger.Debug("Using embedded Excel data (%d bytes)", embedded.GetDataSize())
+		if p.sheetsClient != nil {
+			// Use Google Sheets API
+			logger.Debug("Starting background Google Sheets parsing")
 
-			// Create temporary file from embedded data
-			tempPath, cleanupFunc, tempErr := embedded.SaveEmbeddedDataToTempFile()
-			if tempErr != nil {
-				p.parseError = fmt.Errorf("failed to create temp file from embedded data: %w", tempErr)
+			inProgressReleases, err = p.sheetsClient.ReadInProgressSheet()
+			if err != nil {
+				logger.Debug("Warning: failed to read 'In Progress' sheet: %v", err)
+			}
+
+			completedReleases, err = p.sheetsClient.ReadCompletedSheet()
+			if err != nil {
+				logger.Debug("Warning: failed to read 'ACM MCE Completed ' sheet: %v", err)
+			}
+		} else {
+			// Use Excel file (existing logic)
+			logger.Debug("Starting background Excel file parsing")
+
+			var f *excelize.File
+			var cleanup func()
+
+			// Try embedded data first
+			if embedded.HasEmbeddedData() {
+				logger.Debug("Using embedded Excel data (%d bytes)", embedded.GetDataSize())
+
+				// Create temporary file from embedded data
+				tempPath, cleanupFunc, tempErr := embedded.SaveEmbeddedDataToTempFile()
+				if tempErr != nil {
+					p.parseError = fmt.Errorf("failed to create temp file from embedded data: %w", tempErr)
+					close(p.parseChannel)
+					return
+				}
+				cleanup = cleanupFunc
+
+				f, err = excelize.OpenFile(tempPath)
+			} else if p.filePath != "" {
+				// Fallback to filesystem
+				logger.Debug("Using filesystem Excel file: %s", p.filePath)
+				f, err = excelize.OpenFile(p.filePath)
+			} else {
+				p.parseError = fmt.Errorf("no Excel data available: not embedded and no file path provided")
 				close(p.parseChannel)
 				return
 			}
-			cleanup = cleanupFunc
 
-			f, err = excelize.OpenFile(tempPath)
-		} else if p.filePath != "" {
-			// Fallback to filesystem
-			logger.Debug("Using filesystem Excel file: %s", p.filePath)
-			f, err = excelize.OpenFile(p.filePath)
-		} else {
-			p.parseError = fmt.Errorf("no Excel data available: not embedded and no file path provided")
-			close(p.parseChannel)
-			return
-		}
-
-		if err != nil {
-			if cleanup != nil {
-				cleanup()
+			if err != nil {
+				if cleanup != nil {
+					cleanup()
+				}
+				p.parseError = fmt.Errorf("failed to open Excel file: %w", err)
+				close(p.parseChannel)
+				return
 			}
-			p.parseError = fmt.Errorf("failed to open Excel file: %w", err)
-			close(p.parseChannel)
-			return
-		}
 
-		// Ensure cleanup happens after parsing
-		defer func() {
-			f.Close()
-			if cleanup != nil {
-				cleanup()
+			// Ensure cleanup happens after parsing
+			defer func() {
+				f.Close()
+				if cleanup != nil {
+					cleanup()
+				}
+			}()
+
+			// Parse both tabs
+			inProgressReleases, err = p.parseInProgressTab(f)
+			if err != nil {
+				logger.Debug("Warning: failed to parse 'In Progress' tab: %v", err)
 			}
-		}()
 
-		// Parse both tabs
-		inProgressReleases, inProgressErr := p.parseInProgressTab(f)
-		if inProgressErr != nil {
-			logger.Debug("Warning: failed to parse 'In Progress' tab: %v", inProgressErr)
-		}
-
-		completedReleases, completedErr := p.parseCompletedTab(f)
-		if completedErr != nil {
-			logger.Debug("Warning: failed to parse 'ACM MCE Completed ' tab: %v", completedErr)
+			completedReleases, err = p.parseCompletedTab(f)
+			if err != nil {
+				logger.Debug("Warning: failed to parse 'ACM MCE Completed ' tab: %v", err)
+			}
 		}
 
 		// Store in cache
@@ -140,8 +178,12 @@ func (p *Parser) backgroundParse() {
 		p.cacheMutex.Unlock()
 
 		duration := time.Since(start)
-		logger.Debug("Background Excel parsing completed in %v (found %d total releases)",
-			duration, len(p.cache.allReleases))
+		dataSource := "Excel file"
+		if p.sheetsClient != nil {
+			dataSource = "Google Sheets"
+		}
+		logger.Debug("Background %s parsing completed in %v (found %d total releases)",
+			dataSource, duration, len(p.cache.allReleases))
 
 		// Signal that parsing is complete
 		close(p.parseChannel)
@@ -468,7 +510,7 @@ func (p *Parser) parseDateFromText(text string) *time.Time {
 			// - If the date is more than 6 months in the past, it's likely for next year
 			// - If the date is within 6 months (past or future), it's likely for current year
 			sixMonthsAgo := now.AddDate(0, -6, 0)
-			
+
 			if date.Before(sixMonthsAgo) {
 				// Date is more than 6 months ago, assume next year
 				if dateNextYear, err := time.Parse("1/2/2006", text+"/"+fmt.Sprintf("%d", currentYear+1)); err == nil {

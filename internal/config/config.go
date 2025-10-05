@@ -52,6 +52,17 @@ func Load() (*models.Config, error) {
 		jiraToken = os.Getenv("PR_BOT_JIRA_TOKEN")
 	}
 
+	// Handle Google API configuration
+	googleAPIKey := viper.GetString("google_api_key")
+	if googleAPIKey == "" {
+		googleAPIKey = os.Getenv("PR_BOT_GOOGLE_API_KEY")
+	}
+
+	googleSheetID := viper.GetString("google_sheet_id")
+	if googleSheetID == "" {
+		googleSheetID = os.Getenv("PR_BOT_GOOGLE_SHEET_ID")
+	}
+
 	config := &models.Config{
 		GitHubToken:   viper.GetString("github.token"),
 		Repository:    viper.GetString("github.repository"),
@@ -61,6 +72,8 @@ func Load() (*models.Config, error) {
 		SlackBotToken: viper.GetString("slack.bot_token"),
 		GitLabToken:   gitlabToken,
 		JiraToken:     jiraToken,
+		GoogleAPIKey:  googleAPIKey,
+		GoogleSheetID: googleSheetID,
 	}
 
 	// Validate required fields
@@ -99,6 +112,8 @@ func setDefaults() {
 	viper.SetDefault("slack.bot_token", "")
 	viper.SetDefault("gitlab_token", "")
 	viper.SetDefault("jira_token", "")
+	viper.SetDefault("google_api_key", "")
+	viper.SetDefault("google_sheet_id", "")
 }
 
 // validateConfig validates the configuration.
