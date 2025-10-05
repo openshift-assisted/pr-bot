@@ -159,7 +159,60 @@ func (s *SlackServer) analyzePR(prURL string) (string, error) {
 		return "", fmt.Errorf("failed to analyze PR: %w", err)
 	}
 
-	// Format response for Slack
+	// If JIRA analysis was performed and found related PRs, enhance the response
+	if result.JiraAnalysis != nil && len(result.RelatedPRs) > 0 {
+		// Find unmerged related PRs from the same JIRA tickets
+		var unmergedPRs []models.UnmergedPR
+		
+		// Get all unique PR URLs from JIRA analysis
+		for _, prURL := range result.JiraAnalysis.RelatedPRURLs {
+			// Skip the current PR
+			if strings.Contains(prURL, fmt.Sprintf("/pull/%d", prNumber)) {
+				continue
+			}
+			
+			// Parse PR URL to get details
+			relatedPRNumber, relatedOwner, relatedRepo, parseErr := parsePRURL(prURL)
+			if parseErr != nil {
+				logger.Debug("Failed to parse related PR URL %s: %v", prURL, parseErr)
+				continue
+			}
+			
+			// Check if this PR is already in the RelatedPRs (merged PRs)
+			found := false
+			for _, relatedPR := range result.RelatedPRs {
+				if relatedPR.Number == relatedPRNumber {
+					found = true
+					break
+				}
+			}
+			
+			// If not found in merged PRs, check if it's unmerged
+			if !found {
+				ctx := context.Background()
+				githubClient := github.NewClient(ctx, s.config.GitHubToken)
+				prInfo, prErr := githubClient.GetBasicPRInfo(relatedOwner, relatedRepo, relatedPRNumber)
+				if prErr != nil {
+					logger.Debug("Failed to get basic info for related PR %d: %v", relatedPRNumber, prErr)
+				} else if prInfo.MergedAt == nil {
+					// It's an unmerged PR
+					unmergedPR := models.UnmergedPR{
+						Number: prInfo.Number,
+						Title:  prInfo.Title,
+						URL:    prInfo.URL,
+						Status: "In Review",
+					}
+					unmergedPRs = append(unmergedPRs, unmergedPR)
+					logger.Debug("Found unmerged related PR #%d: %s", relatedPRNumber, prInfo.Title)
+				}
+			}
+		}
+		
+		// Use enhanced formatting that shows related PRs and unmerged PRs
+		return s.formatEnhancedPRAnalysisForSlack(result, unmergedPRs), nil
+	}
+
+	// Format response for Slack (standard format for PRs without JIRA analysis)
 	return s.formatPRAnalysisForSlack(result), nil
 }
 
@@ -414,6 +467,167 @@ func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult) 
 			response.WriteString("\n")
 		}
 		response.WriteString("\n")
+	}
+
+	return response.String()
+}
+
+// formatEnhancedPRAnalysisForSlack formats PR analysis results with related PRs for Slack
+func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysisResult, unmergedPRs []models.UnmergedPR) string {
+	var response strings.Builder
+
+	// Main PR header
+	response.WriteString(fmt.Sprintf("📋 *PR Analysis: #%d*\n", result.PR.Number))
+	response.WriteString(fmt.Sprintf("🔗 %s\n", result.PR.URL))
+	response.WriteString(fmt.Sprintf("📝 %s\n", result.PR.Title))
+	response.WriteString(fmt.Sprintf("🔨 Merged to `%s` at %s\n\n", result.PR.MergedInto, models.FormatDate(result.PR.MergedAt)))
+
+	// JIRA information
+	if result.JiraAnalysis != nil {
+		response.WriteString(fmt.Sprintf("🎫 *JIRA Ticket: %s*\n", result.JiraAnalysis.MainTicket))
+		if len(result.JiraAnalysis.AllTickets) > 1 {
+			response.WriteString(fmt.Sprintf("🔗 Related tickets: %s\n", strings.Join(result.JiraAnalysis.AllTickets[1:], ", ")))
+		}
+		
+		totalRelatedPRs := len(result.RelatedPRs) + len(unmergedPRs)
+		if totalRelatedPRs > 0 {
+			response.WriteString(fmt.Sprintf("📊 Found %d related PRs", totalRelatedPRs))
+			if len(result.RelatedPRs) > 0 && len(unmergedPRs) > 0 {
+				response.WriteString(fmt.Sprintf(" (%d merged, %d in review)", len(result.RelatedPRs), len(unmergedPRs)))
+			} else if len(unmergedPRs) > 0 {
+				response.WriteString(fmt.Sprintf(" (%d in review)", len(unmergedPRs)))
+			}
+			response.WriteString("\n\n")
+		}
+	}
+
+	// Main PR release branch analysis
+	if len(result.ReleaseBranches) == 0 {
+		response.WriteString("❌ No release branches found containing this PR\n")
+	} else {
+		// Group branches by pattern
+		branchGroups := make(map[string][]models.BranchPresence)
+		for _, branch := range result.ReleaseBranches {
+			if branch.Found {
+				branchGroups[branch.Pattern] = append(branchGroups[branch.Pattern], branch)
+			}
+		}
+
+		response.WriteString("✅ *Found in release branches:*\n")
+		for pattern, branches := range branchGroups {
+			response.WriteString(fmt.Sprintf("📂 *%s branches:*\n", getPatternName(pattern)))
+			for _, branch := range branches {
+				response.WriteString(fmt.Sprintf("  • `%s` (v%s)", branch.BranchName, branch.Version))
+				if branch.MergedAt != nil {
+					response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
+				}
+
+				// Add GA release information for ACM/MCE branches
+				if pattern == "release-ocm-" {
+					s.addGAInfoToSlackResponse(&response, branch)
+				}
+
+				// Add version tag information for version-prefixed branches
+				if len(branch.ReleasedVersions) > 0 {
+					response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", strings.Join(branch.ReleasedVersions, ", ")))
+				}
+
+				response.WriteString("\n")
+			}
+			response.WriteString("\n")
+		}
+	}
+
+	// Show related PRs if any exist
+	if len(result.RelatedPRs) > 0 || len(unmergedPRs) > 0 {
+		response.WriteString("🔗 *Related PRs:*\n")
+		
+		// Show merged related PRs
+		for i, relatedPR := range result.RelatedPRs {
+			// Skip the main PR if it appears in related PRs
+			if relatedPR.Number == result.PR.Number {
+				continue
+			}
+			
+			response.WriteString(fmt.Sprintf("*%d. PR #%d*\n", i+1, relatedPR.Number))
+			response.WriteString(fmt.Sprintf("🔗 %s\n", relatedPR.URL))
+			response.WriteString(fmt.Sprintf("📝 %s\n", relatedPR.Title))
+
+			// Check if PR is in any release branches
+			foundBranches := []models.BranchPresence{}
+			for _, branch := range relatedPR.ReleaseBranches {
+				if branch.Found {
+					foundBranches = append(foundBranches, branch)
+				}
+			}
+
+			if len(foundBranches) == 0 {
+				response.WriteString("❌ Not found in any release branches\n")
+			} else {
+				response.WriteString("✅ *Found in release branches:*\n")
+
+				// Group branches by pattern
+				branchGroups := make(map[string][]models.BranchPresence)
+				for _, branch := range foundBranches {
+					branchGroups[branch.Pattern] = append(branchGroups[branch.Pattern], branch)
+				}
+
+				for pattern, branches := range branchGroups {
+					response.WriteString(fmt.Sprintf("  📂 *%s branches:*\n", getPatternName(pattern)))
+					for _, branch := range branches {
+						response.WriteString(fmt.Sprintf("    • `%s` (v%s)", branch.BranchName, branch.Version))
+						if branch.MergedAt != nil {
+							response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
+						}
+
+						// Add GA release information for ACM/MCE branches
+						if pattern == "release-ocm-" {
+							s.addGAInfoToSlackResponse(&response, branch)
+						}
+
+						// Add version tag information for version-prefixed branches
+						if len(branch.ReleasedVersions) > 0 {
+							response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", strings.Join(branch.ReleasedVersions, ", ")))
+						}
+
+						response.WriteString("\n")
+					}
+				}
+			}
+			response.WriteString("\n")
+		}
+
+		// Add unmerged PRs section if any exist
+		if len(unmergedPRs) > 0 {
+			response.WriteString("🔄 *PRs In Review:*\n")
+			for i, unmergedPR := range unmergedPRs {
+				prIndex := len(result.RelatedPRs) + i + 1
+				response.WriteString(fmt.Sprintf("*%d. PR #%d* 🔄 *%s*\n", prIndex, unmergedPR.Number, unmergedPR.Status))
+				response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
+				response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
+				response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
+			}
+		}
+
+		// Summary for related PRs
+		totalBranches := 0
+		for _, relatedPR := range result.RelatedPRs {
+			for _, branch := range relatedPR.ReleaseBranches {
+				if branch.Found {
+					totalBranches++
+				}
+			}
+		}
+
+		totalRelatedPRs := len(result.RelatedPRs) + len(unmergedPRs)
+		summaryText := fmt.Sprintf("📋 *Summary:* 1 main PR + %d related PRs", totalRelatedPRs)
+		if len(result.RelatedPRs) > 0 {
+			summaryText += fmt.Sprintf(" (%d analyzed, %d release branch entries)", len(result.RelatedPRs), totalBranches)
+		}
+		if len(unmergedPRs) > 0 {
+			summaryText += fmt.Sprintf(" (%d in review)", len(unmergedPRs))
+		}
+		response.WriteString(summaryText + "\n")
 	}
 
 	return response.String()
