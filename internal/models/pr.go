@@ -103,7 +103,7 @@ type JiraAnalysis struct {
 	ErrorMessage    string   `json:"error_message"`    // Error details if analysis failed
 }
 
-// RelatedPR represents a related PR found through JIRA ticket analysis.
+// RelatedPR represents a merged PR found through JIRA ticket analysis.
 type RelatedPR struct {
 	Number          int              `json:"number"`
 	Title           string           `json:"title"`
@@ -111,6 +111,14 @@ type RelatedPR struct {
 	Hash            string           `json:"hash"`             // Commit hash
 	JiraTickets     []string         `json:"jira_tickets"`     // JIRA tickets associated with this PR
 	ReleaseBranches []BranchPresence `json:"release_branches"` // Branch analysis for this PR
+}
+
+// UnmergedPR represents an unmerged PR found through JIRA ticket analysis.
+type UnmergedPR struct {
+	Number int    `json:"number"` // PR number
+	Title  string `json:"title"`  // PR title
+	URL    string `json:"url"`    // PR URL
+	Status string `json:"status"` // PR status (e.g., "In Review", "Draft", "Pending")
 }
 
 // Config represents the application configuration.

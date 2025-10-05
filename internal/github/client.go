@@ -71,6 +71,29 @@ func (c *Client) GetPRInfo(owner, repo string, prNumber int) (*models.PRInfo, er
 	return prInfo, nil
 }
 
+// GetBasicPRInfo gets basic PR information regardless of merge status
+func (c *Client) GetBasicPRInfo(owner, repo string, prNumber int) (*models.PRInfo, error) {
+	pr, _, err := c.client.PullRequests.Get(c.ctx, owner, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PR %d: %w", prNumber, err)
+	}
+
+	prInfo := &models.PRInfo{
+		Number:     pr.GetNumber(),
+		Title:      pr.GetTitle(),
+		URL:        pr.GetHTMLURL(),
+		MergedInto: pr.GetBase().GetRef(),
+	}
+
+	// Only set merge-related fields if the PR is actually merged
+	if pr.MergedAt != nil {
+		prInfo.Hash = pr.GetMergeCommitSHA()
+		prInfo.MergedAt = pr.MergedAt.GetTime()
+	}
+
+	return prInfo, nil
+}
+
 // GetReleaseBranches fetches all branches matching the release pattern.
 func (c *Client) GetReleaseBranches(owner, repo, branchPrefix string) ([]string, error) {
 	var allBranches []string

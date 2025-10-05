@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shay23bra/pr-bot/internal/github"
 	"github.com/shay23bra/pr-bot/internal/jira"
 	"github.com/shay23bra/pr-bot/internal/logger"
 	"github.com/shay23bra/pr-bot/internal/models"
@@ -89,7 +90,7 @@ func (s *SlackServer) handleSlashCommand(w http.ResponseWriter, r *http.Request)
 	userID := r.FormValue("user_id")
 	channelID := r.FormValue("channel_id")
 
-	logger.Debug("Received Slack command: %s, text: %s, user: %s, channel: %s", command, text, userID, channelID)
+	logger.Debug("=== RECEIVED SLACK COMMAND: %s, text: %s, user: %s, channel: %s ===", command, text, userID, channelID)
 
 	// Route command
 	var response string
@@ -164,6 +165,7 @@ func (s *SlackServer) analyzePR(prURL string) (string, error) {
 
 // analyzeJiraTicket analyzes a JIRA ticket via Slack
 func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
+	logger.Debug("=== STARTING JIRA TICKET ANALYSIS FOR: %s ===", ticketURL)
 	// Extract JIRA ticket ID (supports any project prefix like ACM, MGMT, etc.)
 	ticketID := jira.ExtractJiraTicketFromText(ticketURL)
 	if ticketID == "" {
@@ -238,9 +240,13 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 		AnalysisSuccess: true,
 	}
 
-	// Analyze each related PR
+	// Analyze each related PR (both merged and unmerged)
 	var relatedPRs []models.RelatedPR
-	for _, prURL := range uniquePRURLs {
+	var unmergedPRs []models.UnmergedPR
+
+	logger.Debug("Starting analysis of %d unique PR URLs", len(uniquePRURLs))
+	for i, prURL := range uniquePRURLs {
+		logger.Debug("Processing PR %d/%d: %s", i+1, len(uniquePRURLs), prURL)
 		// Parse PR URL to get number, owner, repo
 		prNumber, owner, repo, err := parsePRURL(prURL)
 		if err != nil {
@@ -256,18 +262,63 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 
 		// Create analyzer for this specific repository
 		analyzer := analyzer.New(ctx, s.config)
+		if analyzer == nil {
+			logger.Debug("Failed to create analyzer for PR %d, checking if it's unmerged", prNumber)
+			// If analyzer creation fails, still try to get basic PR info to check if it's unmerged
+			ctx := context.Background()
+			githubClient := github.NewClient(ctx, s.config.GitHubToken)
+			prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
+			if prErr != nil {
+				logger.Debug("Failed to get basic info for PR %d: %v", prNumber, prErr)
+			} else if prInfo.MergedAt == nil {
+				// It's an unmerged PR
+				unmergedPR := models.UnmergedPR{
+					Number: prInfo.Number,
+					Title:  prInfo.Title,
+					URL:    prInfo.URL,
+					Status: "In Review",
+				}
+				unmergedPRs = append(unmergedPRs, unmergedPR)
+				logger.Debug("Added unmerged PR #%d to results (analyzer creation failed): %s", prNumber, prInfo.Title)
+			}
+			s.config.Owner = originalOwner
+			s.config.Repository = originalRepo
+			continue
+		}
 
-		// Analyze the PR
+		// Try to analyze the PR
 		result, err := analyzer.AnalyzePR(prNumber)
 		if err != nil {
-			logger.Debug("Failed to analyze PR %d: %v", prNumber, err)
+			logger.Debug("PR %d analysis failed with error: %s", prNumber, err.Error())
+			// Check if it's an unmerged PR
+			if strings.Contains(err.Error(), "is not merged") || strings.Contains(err.Error(), "not merged") {
+				logger.Debug("Detected unmerged PR %d, getting basic info", prNumber)
+				// Get basic PR info for unmerged PR
+				ctx := context.Background()
+				githubClient := github.NewClient(ctx, s.config.GitHubToken)
+				prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
+				if prErr != nil {
+					logger.Debug("Failed to get basic info for unmerged PR %d: %v", prNumber, prErr)
+				} else {
+					unmergedPR := models.UnmergedPR{
+						Number: prInfo.Number,
+						Title:  prInfo.Title,
+						URL:    prInfo.URL,
+						Status: "In Review",
+					}
+					unmergedPRs = append(unmergedPRs, unmergedPR)
+					logger.Debug("Added unmerged PR #%d to results: %s", prNumber, prInfo.Title)
+				}
+			} else {
+				logger.Debug("Failed to analyze PR %d (not unmerged): %v", prNumber, err)
+			}
 			// Restore original config
 			s.config.Owner = originalOwner
 			s.config.Repository = originalRepo
 			continue
 		}
 
-		// Create RelatedPR entry
+		// Create RelatedPR entry for merged PR
 		relatedPR := models.RelatedPR{
 			Number:          result.PR.Number,
 			Title:           result.PR.Title,
@@ -284,7 +335,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 	}
 
 	// Format response for Slack
-	return s.formatJiraAnalysisForSlack(jiraAnalysis, relatedPRs), nil
+	return s.formatJiraAnalysisForSlack(jiraAnalysis, relatedPRs, unmergedPRs), nil
 }
 
 // handleVersionCommand handles version comparison commands
@@ -420,7 +471,7 @@ func (s *SlackServer) addGAInfoToSlackResponse(response *strings.Builder, branch
 }
 
 // formatJiraAnalysisForSlack formats JIRA analysis results for Slack
-func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalysis, relatedPRs []models.RelatedPR) string {
+func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalysis, relatedPRs []models.RelatedPR, unmergedPRs []models.UnmergedPR) string {
 	var response strings.Builder
 
 	response.WriteString(fmt.Sprintf("🎫 *JIRA Ticket Analysis: %s*\n", jiraAnalysis.MainTicket))
@@ -429,9 +480,16 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 		response.WriteString(fmt.Sprintf("🔗 Related tickets: %s\n", strings.Join(jiraAnalysis.AllTickets[1:], ", ")))
 	}
 
-	response.WriteString(fmt.Sprintf("📊 Found %d related PRs\n\n", len(relatedPRs)))
+	totalPRs := len(relatedPRs) + len(unmergedPRs)
+	response.WriteString(fmt.Sprintf("📊 Found %d related PRs", totalPRs))
+	if len(relatedPRs) > 0 && len(unmergedPRs) > 0 {
+		response.WriteString(fmt.Sprintf(" (%d merged, %d in review)", len(relatedPRs), len(unmergedPRs)))
+	} else if len(unmergedPRs) > 0 {
+		response.WriteString(fmt.Sprintf(" (%d in review)", len(unmergedPRs)))
+	}
+	response.WriteString("\n\n")
 
-	if len(relatedPRs) == 0 {
+	if totalPRs == 0 {
 		response.WriteString("❌ No related PRs found in supported repositories\n")
 		response.WriteString("💡 Supported repos: assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui\n")
 		return response.String()
@@ -487,6 +545,18 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 		response.WriteString("\n")
 	}
 
+	// Add unmerged PRs section if any exist
+	if len(unmergedPRs) > 0 {
+		response.WriteString("🔄 *PRs In Review:*\n")
+		for i, unmergedPR := range unmergedPRs {
+			prIndex := len(relatedPRs) + i + 1
+			response.WriteString(fmt.Sprintf("*%d. PR #%d* 🔄 *%s*\n", prIndex, unmergedPR.Number, unmergedPR.Status))
+			response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
+			response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
+			response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
+		}
+	}
+
 	// Summary
 	totalBranches := 0
 	for _, relatedPR := range relatedPRs {
@@ -497,7 +567,14 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 		}
 	}
 
-	response.WriteString(fmt.Sprintf("📋 *Summary:* %d PRs analyzed, %d release branch entries found\n", len(relatedPRs), totalBranches))
+	summaryText := fmt.Sprintf("📋 *Summary:* %d total PRs", totalPRs)
+	if len(relatedPRs) > 0 {
+		summaryText += fmt.Sprintf(" (%d analyzed, %d release branch entries)", len(relatedPRs), totalBranches)
+	}
+	if len(unmergedPRs) > 0 {
+		summaryText += fmt.Sprintf(" (%d in review)", len(unmergedPRs))
+	}
+	response.WriteString(summaryText + "\n")
 
 	return response.String()
 }
@@ -520,8 +597,10 @@ func (s *SlackServer) analyzePRAsync(prURL, responseURL string) {
 
 // analyzeJiraTicketAsync analyzes a JIRA ticket asynchronously and sends result via response_url
 func (s *SlackServer) analyzeJiraTicketAsync(ticketURL, responseURL string) {
+	logger.Debug("=== ASYNC JIRA ANALYSIS STARTED: %s (response_url: %s) ===", ticketURL, responseURL)
 	// Perform the analysis
 	result, err := s.analyzeJiraTicket(ticketURL)
+	logger.Debug("=== ASYNC JIRA ANALYSIS COMPLETED: err=%v ===", err)
 
 	var message string
 	if err != nil {
