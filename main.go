@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/shay23bra/pr-bot/internal/config"
-	"github.com/shay23bra/pr-bot/internal/embedded"
 	"github.com/shay23bra/pr-bot/internal/ga"
 	"github.com/shay23bra/pr-bot/internal/github"
 	"github.com/shay23bra/pr-bot/internal/gitlab"
@@ -130,13 +129,21 @@ func main() {
 
 	// Handle data source information flag
 	if *dataSourceFlag {
+		// Load configuration to check Google Sheets setup
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Printf("❌ Failed to load configuration: %v\n", err)
+			return
+		}
+
 		fmt.Printf("📊 Data Source Information:\n")
-		fmt.Printf("Source: %s\n", embedded.GetDataSource())
-		if embedded.HasEmbeddedData() {
-			fmt.Printf("Data Size: %d bytes\n", embedded.GetDataSize())
-			fmt.Printf("Status: ✅ Excel data is embedded in binary\n")
+		fmt.Printf("Source: Google Sheets API\n")
+		if cfg.GoogleAPIKey != "" && cfg.GoogleSheetID != "" {
+			fmt.Printf("Status: ✅ Google Sheets configured\n")
+			fmt.Printf("Sheet ID: %s\n", cfg.GoogleSheetID)
 		} else {
-			fmt.Printf("Status: 📁 Will read from filesystem (requires data/ACM - Z Stream Release Schedule.xlsx)\n")
+			fmt.Printf("Status: ❌ Google Sheets not configured\n")
+			fmt.Printf("Required: PR_BOT_GOOGLE_API_KEY and PR_BOT_GOOGLE_SHEET_ID\n")
 		}
 		return
 	}
@@ -465,8 +472,10 @@ func handleMCEVersionComparison(component, version string) {
 	}
 
 	// Load GA parser
-	excelFile := "data/ACM - Z Stream Release Schedule.xlsx"
-	gaParser := ga.NewParser(excelFile)
+	gaParser, err := ga.NewParser(cfg.GoogleAPIKey, cfg.GoogleSheetID)
+	if err != nil {
+		log.Fatalf("Failed to create GA parser: %v", err)
+	}
 
 	// Find previous MCE version
 	previousVersion, err := findPreviousMCEVersion(version, gaParser)

@@ -2,7 +2,7 @@
 
 A Go-based tool to analyze merged pull requests and determine their presence across release branches. Available as both a **CLI tool** for individual use and a **Slack bot server** for team collaboration.
 
-✨ **Ready to use out of the box** - `go install` gives you a fully functional tool with embedded data, no external files needed! The tool helps track the deployment status of changes across different release versions.
+✨ **Ready to use out of the box** - `go install` gives you a fully functional tool, just configure Google Sheets API access! The tool helps track the deployment status of changes across different release versions.
 
 ## 🌿 Branch Structure
 
@@ -43,7 +43,7 @@ PR_BOT_JIRA_TOKEN=your_jira_token_here
 # Required for Slack bot server mode (OAuth bot token)
 PR_BOT_SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 
-# Optional: Google Sheets for real-time GA data (recommended)
+# Required: Google Sheets for GA data
 PR_BOT_GOOGLE_API_KEY=your_google_api_key_here
 PR_BOT_GOOGLE_SHEET_ID=your_google_sheet_id_here
 EOF
@@ -71,8 +71,8 @@ pr-bot -server
 - **MCE Validation**: Verify commits against MCE GitLab snapshots with SHA extraction
 
 ### 📅 Release Management
-- **GA Status Tracking**: Analyze General Availability status from Google Sheets or Excel files
-- **Real-time Data**: Google Sheets integration provides live release schedule updates
+- **GA Status Tracking**: Analyze General Availability status from Google Sheets
+- **Real-time Data**: Live release schedule updates directly from Google Sheets
 - **Release Schedule Integration**: Parse "In Progress" and "ACM MCE Completed" tabs to determine GA dates
 - **Version Comparison**: Compare MCE/GitHub versions to track changes between releases with required component-specific analysis
 
@@ -84,46 +84,36 @@ pr-bot -server
 
 ## 🔒 Data Source Architecture
 
-This tool supports **multiple data source options** to provide flexibility while keeping sensitive data secure:
+This tool uses **Google Sheets API** as the exclusive data source for GA (General Availability) release information:
 
-### 📊 **Data Source Options**
+### 🌐 **Google Sheets Integration**
 
-#### 🌐 **Google Sheets (Recommended)**
-- **Real-time Data**: Always uses the latest release schedule
-- **Easy Updates**: Maintainers can update data without rebuilding
-- **Secure Access**: Uses Google API key authentication
-- **No Embedding**: No need to embed data in binaries
+- **✅ Real-time Data**: Always uses the latest release schedule from Google Sheets
+- **🔄 Live Updates**: Changes reflect immediately without redeployment
+- **🔐 Secure Access**: API key authentication with configurable restrictions
+- **📱 Easy Maintenance**: Familiar spreadsheet interface for data management
+- **🚀 No Rebuilds**: Update GA data through Google Sheets without touching code
 
-#### 📁 **Embedded Excel (Legacy)**
-- **Offline Access**: Works without internet connection
-- **Embedded Data**: Excel file built into the binary
-- **Private Data**: Excel file stays private (not in repo)
+### 📋 **Required Configuration**
 
-### 🎯 **Data Source Priority**
-1. **Google Sheets** (if `PR_BOT_GOOGLE_API_KEY` and `PR_BOT_GOOGLE_SHEET_ID` are configured)
-2. **Embedded Excel** (if built with `-tags=embedded`)
-3. **Filesystem Excel** (fallback to `data/ACM - Z Stream Release Schedule.xlsx`)
+Both environment variables are **required** for the tool to function:
 
-### 🚀 **Setup Options**
-
-| Who | Recommended Setup | How |
-|-----|---------------|-----|
-| **👥 Production Users** | Google Sheets API | Get API key + use live Google Sheet |
-| **🔧 Contributors** | Filesystem Excel | `go build` + provide Excel file |
-| **👤 Maintainers** | Google Sheets or Embedded | API key or `go build -tags=embedded` |
+```bash
+export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
+export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
+```
 
 ### ⚡ **Benefits**
-- ✅ **Real-time Updates**: Google Sheets provides live data
-- ✅ **Easy Maintenance**: Update data without rebuilding
-- ✅ **Flexible Deployment**: Multiple data source options
-- ✅ **Secure Access**: API key authentication
-- ✅ **Backward Compatible**: Still supports embedded Excel
+- ✅ **Real-time Updates**: Live data from Google Sheets
+- ✅ **Zero Downtime**: Update data without restarting services
+- ✅ **Collaborative**: Multiple users can maintain the release schedule
+- ✅ **Audit Trail**: Google Sheets provides change history
+- ✅ **Simplified Deployment**: No data files to manage
 
-### 🔍 **Check Your Version**
+### 🔍 **Check Your Configuration**
 ```bash
-pr-bot --data-source
-# Released version:     "Source: embedded (67339 bytes)"
-# Development build:    "Source: filesystem"
+pr-bot --config
+# Shows your current configuration including Google Sheets setup
 ```
 
 ## Installation
@@ -157,47 +147,29 @@ sudo mv pr-bot /usr/local/bin/
 
 ### Option 3: Build from Source
 
-#### 🚀 Default Build (With Embedded Data)
-This is what `go install` produces - includes embedded data:
+#### 🚀 Build from Source
 ```bash
 # Clone repository
 git clone https://github.com/shay23bra/pr-bot.git
 cd pr-bot
 
-# Add the private Excel data file
-cp /path/to/your/"ACM - Z Stream Release Schedule.xlsx" data/
+# Build the application
+go build .
 
-# Build with embedded data (default build)
-./scripts/build-with-data.sh
+# Configure Google Sheets access (required)
+export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
+export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
 
-# Verify embedded data
-./pr-bot --data-source
-# Should show: "Source: embedded (67339 bytes)"
+# Verify configuration
+./pr-bot --config
 ```
 
-#### 🔧 Contributor Build (Filesystem Data)
-For developers who don't have access to the private data file:
-```bash
-# Clone repository  
-git clone https://github.com/shay23bra/pr-bot.git
-cd pr-bot
-
-# Build filesystem version (for contributors)
-./scripts/build-public.sh
-
-# Verify build mode
-./pr-bot --data-source
-# Should show: "Source: filesystem"
-
-# You'll need to provide your own Excel file at:
-# data/ACM - Z Stream Release Schedule.xlsx
-```
 
 #### 👤 Maintainer Builds & Releases
 **For project maintainers who can build and release new versions:**
 
 ⚠️ **Requirements for Building/Releasing:**
-- Access to the private Excel file: `data/ACM - Z Stream Release Schedule.xlsx`
+- Google Sheets API access (API key and Sheet ID)
 - GitHub repository write access
 - Being listed in the GitHub Actions workflow conditions
 
@@ -206,22 +178,19 @@ cd pr-bot
 git clone https://github.com/shay23bra/pr-bot.git
 cd pr-bot
 
-# Add the private Excel data file (required!)
-cp /path/to/private/"ACM - Z Stream Release Schedule.xlsx" data/
+# Build CLI distribution version
+./scripts/build-cli.sh
 
-# Build with embedded data
-./scripts/build-with-data.sh
-
-# For releases, build and release manually:
-./scripts/build-with-data.sh
+# For releases, build and release:
+./scripts/build-cli.sh
 gh release create v0.X.X --title "vX.X.X - Release Title" --notes "Release notes" ./pr-bot
 ```
 
-**⚡ Why This Restriction:**
-- Only people with the private Excel file can create releases
-- This ensures sensitive data never gets into public source code
-- Released binaries include embedded data for all users
-- Contributors can still build filesystem versions for development
+**⚡ New Architecture Benefits:**
+- No sensitive data files in the repository
+- Real-time data updates without rebuilding
+- Simplified build process for all contributors
+- Users configure their own Google Sheets access
 
 ### Prerequisites
 
@@ -230,7 +199,7 @@ gh release create v0.X.X --title "vX.X.X - Release Title" --notes "Release notes
 - **GitLab token (REQUIRED)** - For MCE validation  
 - **JIRA token (REQUIRED)** - For JIRA ticket analysis
 - **Red Hat VPN connection (REQUIRED)** - For accessing internal GitLab and JIRA APIs
-- Excel file `data/ACM - Z Stream Release Schedule.xlsx` with release schedule data
+- **Google Sheets API access (REQUIRED)** - For GA release schedule data
 
 ### GitHub Token Setup
 
@@ -305,9 +274,9 @@ For MCE snapshot validation (used in PR analysis and version comparison), you'll
 - Enables version comparison features (`-v` flag)
 - Token should have `read_api` scope to access MCE repository files
 
-### Google Sheets Setup (Recommended for GA Data)
+### Google Sheets Setup (Required for GA Data)
 
-For real-time GA release schedule data, you can configure Google Sheets API access:
+The tool requires Google Sheets API access for GA release schedule data:
 
 1. **Get Google API Key**:
    - Go to [Google Cloud Console](https://console.cloud.google.com/)
@@ -336,10 +305,10 @@ For real-time GA release schedule data, you can configure Google Sheets API acce
 
 **Important Notes:**
 - **Recommended**: Provides real-time data without rebuilding binaries
-- **Sheet Structure**: Must have "In Progress" and "ACM MCE Completed " tabs (same as Excel format)
-- **Fallback**: If not configured, falls back to embedded Excel data
-- **Priority**: Google Sheets takes priority over embedded Excel when configured
+- **Sheet Structure**: Must have "In Progress" and "ACM MCE Completed " tabs
+- **Required**: Both API key and Sheet ID must be configured for the tool to work
 - **Security**: Keep your API key secure and consider IP restrictions
+- **Access**: Sheet must be accessible with your API key (public or shared)
 
 ### Setup
 
@@ -405,7 +374,7 @@ export PR_BOT_GITHUB_DEFAULT_BRANCH="master"
 # Slack Bot Configuration (Required for Slack mode)
 export PR_BOT_SLACK_BOT_TOKEN="xoxb-your-bot-token-here"
 
-# Google Sheets Configuration (Recommended for GA data)
+# Google Sheets Configuration (Required for GA data)
 export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
 export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
 
@@ -765,7 +734,7 @@ spec:
 
 Debug mode provides detailed logging including:
 - Configuration values at startup
-- Excel file parsing progress
+- Google Sheets API parsing progress
 - GA status analysis steps
 - GitHub API request details
 - Release branch matching logic
@@ -910,7 +879,7 @@ pr-bot/
 │   └── slack/               # Slack API client
 ├── pkg/
 │   └── analyzer/            # Core analysis logic
-├── data/                    # Excel files for GA tracking
+├── scripts/                 # Build and utility scripts
 ├── go.mod                   # Go module definition
 ├── Makefile                 # Build automation
 └── README.md               # This file
@@ -950,7 +919,7 @@ The project follows Go best practices with a clean architecture:
 3. **Analyzer** (`pkg/analyzer/`): Business logic
 4. **Configuration** (`internal/config/`): Configuration management
 5. **CLI** (`main.go`): Command-line interface
-6. **GA Parser** (`internal/ga/`): Excel parsing for release tracking
+6. **GA Parser** (`internal/ga/`): Google Sheets parsing for release tracking
 
 ## API Rate Limits
 

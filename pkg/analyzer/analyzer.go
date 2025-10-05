@@ -21,9 +21,6 @@ import (
 
 // Constants for the analyzer package.
 const (
-	// Excel file path for GA tracking
-	ExcelFilePath = "data/ACM - Z Stream Release Schedule.xlsx"
-
 	// Status check strings - these match the constants in ga package
 	StatusNotFound = "Not Found"
 )
@@ -45,19 +42,19 @@ type Analyzer struct {
 func New(ctx context.Context, config *models.Config) *Analyzer {
 	githubClient := github.NewClient(ctx, config.GitHubToken)
 
-	// Create GA parser - use Google Sheets if configured, otherwise use Excel file
+	// Create GA parser - requires Google Sheets configuration
 	var gaParser *ga.Parser
 	if config.GoogleAPIKey != "" && config.GoogleSheetID != "" {
 		logger.Debug("Using Google Sheets for GA data (Sheet ID: %s)", config.GoogleSheetID)
 		var err error
-		gaParser, err = ga.NewSheetsParser(config.GoogleAPIKey, config.GoogleSheetID)
+		gaParser, err = ga.NewParser(config.GoogleAPIKey, config.GoogleSheetID)
 		if err != nil {
-			logger.Debug("Failed to create Google Sheets parser, falling back to Excel: %v", err)
-			gaParser = ga.NewParser(ExcelFilePath)
+			logger.Debug("Failed to create Google Sheets parser: %v", err)
+			return nil
 		}
 	} else {
-		logger.Debug("Using Excel file for GA data")
-		gaParser = ga.NewParser(ExcelFilePath)
+		logger.Debug("Google Sheets configuration missing (PR_BOT_GOOGLE_API_KEY and PR_BOT_GOOGLE_SHEET_ID required)")
+		return nil
 	}
 	// Slack integration is now handled by the server component
 
@@ -247,12 +244,13 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 		AnalyzedAt:      time.Now(),
 	}
 
-	// Perform JIRA analysis if JIRA client is available and PR title contains MGMT ticket
+	// Perform JIRA analysis if JIRA client is available and PR title contains any JIRA ticket
 	if a.jiraClient != nil && !skipJiraAnalysis {
-		mgmtTicket := jira.ExtractMGMTTicketFromTitle(prInfo.Title)
-		if mgmtTicket != "" {
-			logger.Debug("Found MGMT ticket in PR title: %s", mgmtTicket)
-			jiraAnalysis, relatedPRs := a.performJiraAnalysis(mgmtTicket, prInfo)
+		// Look for any JIRA ticket (ACM, MGMT, OCPBUGS, etc.) in PR title
+		jiraTicket := jira.ExtractJiraTicketFromText(prInfo.Title)
+		if jiraTicket != "" {
+			logger.Debug("Found JIRA ticket in PR title: %s", jiraTicket)
+			jiraAnalysis, relatedPRs := a.performJiraAnalysis(jiraTicket, prInfo)
 			result.JiraAnalysis = jiraAnalysis
 			result.RelatedPRs = relatedPRs
 		}

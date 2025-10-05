@@ -25,21 +25,8 @@ test_output.txt
 logs/
 *.out
 
-# Data files (contains sensitive information - excluded from public repo)
-data/
-*.xlsx
-*.xls
-*.csv
-
-# Embedded data files (temporary files during private builds)
-internal/embedded/*.xlsx
-internal/embedded/*.xls  
-internal/embedded/*.csv
-
-# Keep embedded package structure and placeholder file
-!internal/embedded/
-!internal/embedded/*.go
-!internal/embedded/schedule.xlsx
+# Note: This project now uses Google Sheets API for data access
+# No local data files are needed
 
 # IDE and editor files  
 .vscode/
