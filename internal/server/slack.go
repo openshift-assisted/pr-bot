@@ -655,7 +655,12 @@ func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysis
 			response.WriteString("🔄 *PRs In Review:*\n")
 			for i, unmergedPR := range unmergedPRs {
 				prIndex := len(result.RelatedPRs) + i + 1
-				response.WriteString(fmt.Sprintf("*%d. PR #%d* 🔄 *%s*\n", prIndex, unmergedPR.Number, unmergedPR.Status))
+				// Display status only if it's not a standard "In Review" status
+				statusDisplay := ""
+				if unmergedPR.Status != "In Review" {
+					statusDisplay = fmt.Sprintf(" *%s*", unmergedPR.Status)
+				}
+				response.WriteString(fmt.Sprintf("*%d. PR #%d*%s\n", prIndex, unmergedPR.Number, statusDisplay))
 				response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
 				response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
 				response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
@@ -814,14 +819,19 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 
 	// Add unmerged PRs section if any exist
 	if len(unmergedPRs) > 0 {
-		response.WriteString("🔄 *PRs In Review:*\n")
-		for i, unmergedPR := range unmergedPRs {
-			prIndex := len(relatedPRs) + i + 1
-			response.WriteString(fmt.Sprintf("*%d. PR #%d* 🔄 *%s*\n", prIndex, unmergedPR.Number, unmergedPR.Status))
-			response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
-			response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
-			response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
+	response.WriteString("🔄 *PRs In Review:*\n")
+	for i, unmergedPR := range unmergedPRs {
+		prIndex := len(relatedPRs) + i + 1
+		// Display status only if it's not a standard "In Review" status
+		statusDisplay := ""
+		if unmergedPR.Status != "In Review" {
+			statusDisplay = fmt.Sprintf(" *%s*", unmergedPR.Status)
 		}
+		response.WriteString(fmt.Sprintf("*%d. PR #%d*%s\n", prIndex, unmergedPR.Number, statusDisplay))
+		response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
+		response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
+		response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
+	}
 	}
 
 	// Summary
