@@ -262,7 +262,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 		fmt.Sprintf("github.com/%s/assisted-service/pull/", s.config.Owner),
 		fmt.Sprintf("github.com/%s/assisted-installer/pull/", s.config.Owner),
 		fmt.Sprintf("github.com/%s/assisted-installer-agent/pull/", s.config.Owner),
-		fmt.Sprintf("github.com/%s/assisted-installer-ui/pull/", s.config.Owner),
+		fmt.Sprintf("github.com/openshift-assisted/assisted-installer-ui/pull/"), // Different owner
 	}
 
 	for _, prURL := range allPRURLs {
@@ -352,6 +352,15 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 				prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
 				if prErr != nil {
 					logger.Debug("Failed to get basic info for unmerged PR %d: %v", prNumber, prErr)
+					// Even if we can't get basic info, still add it as an unmerged PR with minimal info
+					unmergedPR := models.UnmergedPR{
+						Number: prNumber,
+						Title:  fmt.Sprintf("PR #%d (unmerged)", prNumber),
+						URL:    prURL,
+						Status: "In Review",
+					}
+					unmergedPRs = append(unmergedPRs, unmergedPR)
+					logger.Debug("Added unmerged PR #%d to results (basic info failed): %s", prNumber, prURL)
 				} else {
 					unmergedPR := models.UnmergedPR{
 						Number: prInfo.Number,
@@ -363,7 +372,43 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 					logger.Debug("Added unmerged PR #%d to results: %s", prNumber, prInfo.Title)
 				}
 			} else {
-				logger.Debug("Failed to analyze PR %d (not unmerged): %v", prNumber, err)
+				logger.Debug("Failed to analyze PR %d (not unmerged), getting basic info", prNumber)
+				// For other analysis failures, still try to get basic PR info
+				ctx := context.Background()
+				githubClient := github.NewClient(ctx, s.config.GitHubToken)
+				prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
+				if prErr != nil {
+					logger.Debug("Failed to get basic info for PR %d: %v", prNumber, prErr)
+					// Even if we can't get basic info, still add it as an unmerged PR with minimal info
+					unmergedPR := models.UnmergedPR{
+						Number: prNumber,
+						Title:  fmt.Sprintf("PR #%d (analysis failed)", prNumber),
+						URL:    prURL,
+						Status: "Analysis Failed",
+					}
+					unmergedPRs = append(unmergedPRs, unmergedPR)
+					logger.Debug("Added PR #%d to results (analysis failed): %s", prNumber, prURL)
+				} else if prInfo.MergedAt == nil {
+					// It's an unmerged PR
+					unmergedPR := models.UnmergedPR{
+						Number: prInfo.Number,
+						Title:  prInfo.Title,
+						URL:    prInfo.URL,
+						Status: "In Review",
+					}
+					unmergedPRs = append(unmergedPRs, unmergedPR)
+					logger.Debug("Added unmerged PR #%d to results (analysis failed): %s", prNumber, prInfo.Title)
+				} else {
+					// It's a merged PR but analysis failed - add it as unmerged with error status
+					unmergedPR := models.UnmergedPR{
+						Number: prInfo.Number,
+						Title:  prInfo.Title,
+						URL:    prInfo.URL,
+						Status: "Analysis Failed",
+					}
+					unmergedPRs = append(unmergedPRs, unmergedPR)
+					logger.Debug("Added merged PR #%d to results (analysis failed): %s", prNumber, prInfo.Title)
+				}
 			}
 			// Restore original config
 			s.config.Owner = originalOwner
