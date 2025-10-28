@@ -163,21 +163,21 @@ func (s *SlackServer) analyzePR(prURL string) (string, error) {
 	if result.JiraAnalysis != nil && len(result.RelatedPRs) > 0 {
 		// Find unmerged related PRs from the same JIRA tickets
 		var unmergedPRs []models.UnmergedPR
-		
+
 		// Get all unique PR URLs from JIRA analysis
 		for _, prURL := range result.JiraAnalysis.RelatedPRURLs {
 			// Skip the current PR
 			if strings.Contains(prURL, fmt.Sprintf("/pull/%d", prNumber)) {
 				continue
 			}
-			
+
 			// Parse PR URL to get details
 			relatedPRNumber, relatedOwner, relatedRepo, parseErr := parsePRURL(prURL)
 			if parseErr != nil {
 				logger.Debug("Failed to parse related PR URL %s: %v", prURL, parseErr)
 				continue
 			}
-			
+
 			// Check if this PR is already in the RelatedPRs (merged PRs)
 			found := false
 			for _, relatedPR := range result.RelatedPRs {
@@ -186,7 +186,7 @@ func (s *SlackServer) analyzePR(prURL string) (string, error) {
 					break
 				}
 			}
-			
+
 			// If not found in merged PRs, check if it's unmerged
 			if !found {
 				ctx := context.Background()
@@ -207,7 +207,7 @@ func (s *SlackServer) analyzePR(prURL string) (string, error) {
 				}
 			}
 		}
-		
+
 		// Use enhanced formatting that shows related PRs and unmerged PRs
 		return s.formatEnhancedPRAnalysisForSlack(result, unmergedPRs), nil
 	}
@@ -265,6 +265,9 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 		fmt.Sprintf("github.com/openshift-assisted/assisted-installer-ui/pull/"), // Different owner
 	}
 
+	logger.Debug("Found %d total PR URLs from JIRA tickets", len(allPRURLs))
+	logger.Debug("Supported repos: %v", supportedRepos)
+
 	for _, prURL := range allPRURLs {
 		if prURLsMap[prURL] {
 			continue // Skip duplicates
@@ -275,6 +278,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 		for _, supportedRepo := range supportedRepos {
 			if strings.Contains(prURL, supportedRepo) {
 				isSupported = true
+				logger.Debug("PR %s matches supported repo pattern: %s", prURL, supportedRepo)
 				break
 			}
 		}
@@ -282,8 +286,12 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 		if isSupported {
 			prURLsMap[prURL] = true
 			uniquePRURLs = append(uniquePRURLs, prURL)
+		} else {
+			logger.Debug("PR %s does not match any supported repo pattern", prURL)
 		}
 	}
+
+	logger.Debug("After filtering: %d unique PR URLs", len(uniquePRURLs))
 
 	// Create JIRA analysis result
 	jiraAnalysis := &models.JiraAnalysis{
@@ -533,7 +541,7 @@ func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysis
 		if len(result.JiraAnalysis.AllTickets) > 1 {
 			response.WriteString(fmt.Sprintf("🔗 Related tickets: %s\n", strings.Join(result.JiraAnalysis.AllTickets[1:], ", ")))
 		}
-		
+
 		totalRelatedPRs := len(result.RelatedPRs) + len(unmergedPRs)
 		if totalRelatedPRs > 0 {
 			response.WriteString(fmt.Sprintf("📊 Found %d related PRs", totalRelatedPRs))
@@ -586,14 +594,14 @@ func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysis
 	// Show related PRs if any exist
 	if len(result.RelatedPRs) > 0 || len(unmergedPRs) > 0 {
 		response.WriteString("🔗 *Related PRs:*\n")
-		
+
 		// Show merged related PRs
 		for i, relatedPR := range result.RelatedPRs {
 			// Skip the main PR if it appears in related PRs
 			if relatedPR.Number == result.PR.Number {
 				continue
 			}
-			
+
 			response.WriteString(fmt.Sprintf("*%d. PR #%d*\n", i+1, relatedPR.Number))
 			response.WriteString(fmt.Sprintf("🔗 %s\n", relatedPR.URL))
 			response.WriteString(fmt.Sprintf("📝 %s\n", relatedPR.Title))

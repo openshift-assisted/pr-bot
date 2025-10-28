@@ -305,7 +305,7 @@ The tool requires Google Sheets API access for GA release schedule data:
 
 **Important Notes:**
 - **Recommended**: Provides real-time data without rebuilding binaries
-- **Sheet Structure**: Must have "In Progress" and "ACM MCE Completed " tabs
+- **Sheet Structure**: Must have "In Progress" and "Completed Releases" tabs
 - **Required**: Both API key and Sheet ID must be configured for the tool to work
 - **Security**: Keep your API key secure and consider IP restrictions
 - **Access**: Sheet must be accessible with your API key (public or shared)

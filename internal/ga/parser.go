@@ -19,7 +19,7 @@ const (
 	ProductMCE = "MCE"
 
 	SheetInProgress = "In Progress"
-	SheetCompleted  = "ACM MCE Completed "
+	SheetCompleted  = "Completed Releases"
 
 	// Status constants
 	StatusGA          = "GA"
@@ -89,7 +89,7 @@ func (p *Parser) backgroundParse() {
 
 		completedReleases, err := p.sheetsClient.ReadCompletedSheet()
 		if err != nil {
-			p.parseError = fmt.Errorf("failed to read 'ACM MCE Completed ' sheet: %w", err)
+			p.parseError = fmt.Errorf("failed to read 'Completed Releases' sheet: %w", err)
 			close(p.parseChannel)
 			return
 		}

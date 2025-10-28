@@ -98,20 +98,20 @@ func (c *SheetsClient) ReadInProgressSheet() ([]ReleaseInfo, error) {
 	return releases, nil
 }
 
-// ReadCompletedSheet reads data from the "ACM MCE Completed " sheet
+// ReadCompletedSheet reads data from the "Completed Releases" sheet
 func (c *SheetsClient) ReadCompletedSheet() ([]ReleaseInfo, error) {
-	logger.Debug("Reading 'ACM MCE Completed ' sheet from Google Sheets")
+	logger.Debug("Reading 'Completed Releases' sheet from Google Sheets")
 
-	// Read the entire "ACM MCE Completed " sheet (note the trailing space)
-	readRange := "ACM MCE Completed !A:Z"
+	// Read the entire "Completed Releases" sheet (note the trailing space)
+	readRange := "Completed Releases!A:Z"
 	resp, err := c.service.Spreadsheets.Values.Get(c.sheetID, readRange).Do()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read ACM MCE Completed sheet: %w", err)
+		return nil, fmt.Errorf("failed to read Completed Releasessheet: %w", err)
 	}
 
 	var releases []ReleaseInfo
 
-	logger.Debug("Processing %d rows from 'ACM MCE Completed ' sheet", len(resp.Values))
+	logger.Debug("Processing %d rows from 'Completed Releases' sheet", len(resp.Values))
 
 	// Parse each row looking for version and date pairs
 	for _, row := range resp.Values {
@@ -145,7 +145,7 @@ func (c *SheetsClient) ReadCompletedSheet() ([]ReleaseInfo, error) {
 		}
 	}
 
-	logger.Debug("Parsed %d releases from 'ACM MCE Completed ' sheet", len(releases))
+	logger.Debug("Parsed %d releases from 'Completed Releases' sheet", len(releases))
 	return releases, nil
 }
 
