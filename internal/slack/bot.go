@@ -285,7 +285,7 @@ func getPatternDisplayName(pattern string) string {
 	case "release-v":
 		return "Release-v"
 	case "v":
-		return "Version-prefixed"
+		return "SaaS versions"
 	case "releases/v":
 		return "UI Release"
 	default:

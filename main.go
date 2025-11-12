@@ -1098,7 +1098,16 @@ func handleJiraTicketAnalysis(jiraInput string) {
 
 							// For Version-prefixed branches, show released versions
 							if len(branch.ReleasedVersions) > 0 {
-								fmt.Printf("\n        %s", strings.Join(branch.ReleasedVersions, ", "))
+								releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
+								// Add badge for SaaS versions
+								if branch.Pattern == "v" && cfg.GitLabToken != "" {
+									ctx := context.Background()
+									githubClient := github.NewClient(ctx, cfg.GitHubToken)
+									gitlabClient := gitlab.NewClient(ctx, cfg.GitLabToken, githubClient)
+									badge := gitlabClient.GetSaaSVersionBadge(branch.ReleasedVersions[0])
+									releasedVersionsText += badge
+								}
+								fmt.Printf("\n        %s", releasedVersionsText)
 							}
 
 							if len(branch.UpcomingGAs) == 0 {
@@ -1216,7 +1225,7 @@ func getPatternDescription(pattern string) string {
 	case "release-v":
 		return "Release-v"
 	case "v":
-		return "Version-prefixed"
+		return "SaaS versions"
 	default:
 		return pattern
 	}

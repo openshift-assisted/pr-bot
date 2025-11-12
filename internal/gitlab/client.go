@@ -747,3 +747,127 @@ func (c *Client) FindLatestSnapshot(mceBranch string) (string, error) {
 	logger.Debug("Found latest snapshot folder: %s", latestFolder)
 	return latestFolder, nil
 }
+
+// Deployment represents a deployment entry in deployments.yaml
+type Deployment struct {
+	Version     string `yaml:"version"`
+	Environment string `yaml:"environment"`
+}
+
+// DeploymentsYAML represents the structure of deployments.yaml
+type DeploymentsYAML struct {
+	Deployments []Deployment `yaml:"deployments"`
+}
+
+// GetDeploymentsVersions fetches and parses deployments.yaml from GitLab
+func (c *Client) GetDeploymentsVersions() (string, string, error) {
+	projectID := "assisted-installer-ops/assisted-installer-cicd"
+	filePath := "deployments.yaml"
+	branch := "main"
+
+	file, resp, err := c.client.RepositoryFiles.GetFile(projectID, filePath, &gitlab.GetFileOptions{
+		Ref: &branch,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get deployments.yaml: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("failed to get deployments.yaml, status: %d", resp.StatusCode)
+	}
+
+	// Decode the file content
+	content, err := base64.StdEncoding.DecodeString(file.Content)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to decode deployments.yaml: %w", err)
+	}
+
+	// Parse YAML
+	var deployments DeploymentsYAML
+	if err := yaml.Unmarshal(content, &deployments); err != nil {
+		return "", "", fmt.Errorf("failed to parse deployments.yaml: %w", err)
+	}
+
+	// Find production and stage versions
+	var productionVersion, stageVersion string
+	for _, deployment := range deployments.Deployments {
+		if deployment.Environment == "production" {
+			productionVersion = deployment.Version
+		} else if deployment.Environment == "stage" {
+			stageVersion = deployment.Version
+		}
+	}
+
+	return productionVersion, stageVersion, nil
+}
+
+// CompareVersions compares two version strings (e.g., "v2.46.0" vs "2.47.0")
+// Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if v1 == v2
+func CompareVersions(v1, v2 string) int {
+	// Remove 'v' prefix if present
+	v1 = strings.TrimPrefix(v1, "v")
+	v2 = strings.TrimPrefix(v2, "v")
+
+	// Split by dots
+	parts1 := strings.Split(v1, ".")
+	parts2 := strings.Split(v2, ".")
+
+	// Compare each part
+	maxLen := len(parts1)
+	if len(parts2) > maxLen {
+		maxLen = len(parts2)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var num1, num2 int
+
+		if i < len(parts1) {
+			if n, err := strconv.Atoi(parts1[i]); err == nil {
+				num1 = n
+			}
+		}
+
+		if i < len(parts2) {
+			if n, err := strconv.Atoi(parts2[i]); err == nil {
+				num2 = n
+			}
+		}
+
+		if num1 < num2 {
+			return -1
+		} else if num1 > num2 {
+			return 1
+		}
+	}
+
+	return 0
+}
+
+// GetSaaSVersionBadge returns the badge text for a SaaS version based on deployments.yaml
+func (c *Client) GetSaaSVersionBadge(releasedVersion string) string {
+	productionVersion, stageVersion, err := c.GetDeploymentsVersions()
+	if err != nil {
+		logger.Debug("Failed to get deployments versions: %v", err)
+		return ""
+	}
+
+	// Remove 'v' prefix from released version for comparison
+	releasedVersionClean := strings.TrimPrefix(releasedVersion, "v")
+
+	// Compare with production first
+	if productionVersion != "" {
+		if CompareVersions(productionVersion, releasedVersionClean) > 0 {
+			return " - in production"
+		}
+	}
+
+	// Then compare with stage
+	if stageVersion != "" {
+		if CompareVersions(stageVersion, releasedVersionClean) > 0 {
+			return " - in staging"
+		}
+	}
+
+	// If neither is bigger, it's not in production or staging yet
+	return " - not in production or staging yet"
+}

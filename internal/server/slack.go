@@ -514,7 +514,14 @@ func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult) 
 
 			// Add version tag information for version-prefixed branches
 			if len(branch.ReleasedVersions) > 0 {
-				response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", strings.Join(branch.ReleasedVersions, ", ")))
+				releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
+				// Add badge for SaaS versions
+				if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
+					// Get badge for the first released version (or all if multiple)
+					badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
+					releasedVersionsText += badge
+				}
+				response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", releasedVersionsText))
 			}
 
 			response.WriteString("\n")
@@ -582,7 +589,14 @@ func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysis
 
 				// Add version tag information for version-prefixed branches
 				if len(branch.ReleasedVersions) > 0 {
-					response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", strings.Join(branch.ReleasedVersions, ", ")))
+					releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
+					// Add badge for SaaS versions
+					if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
+						// Get badge for the first released version (or all if multiple)
+						badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
+						releasedVersionsText += badge
+					}
+					response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", releasedVersionsText))
 				}
 
 				response.WriteString("\n")
@@ -640,7 +654,14 @@ func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysis
 
 						// Add version tag information for version-prefixed branches
 						if len(branch.ReleasedVersions) > 0 {
-							response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", strings.Join(branch.ReleasedVersions, ", ")))
+							releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
+							// Add badge for SaaS versions
+							if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
+								// Get badge for the first released version (or all if multiple)
+								badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
+								releasedVersionsText += badge
+							}
+							response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", releasedVersionsText))
 						}
 
 						response.WriteString("\n")
@@ -807,7 +828,14 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 
 					// Add version tag information for version-prefixed branches
 					if len(branch.ReleasedVersions) > 0 {
-						response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", strings.Join(branch.ReleasedVersions, ", ")))
+						releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
+						// Add badge for SaaS versions
+						if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
+							// Get badge for the first released version (or all if multiple)
+							badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
+							releasedVersionsText += badge
+						}
+						response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", releasedVersionsText))
 					}
 
 					response.WriteString("\n")
@@ -819,19 +847,19 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 
 	// Add unmerged PRs section if any exist
 	if len(unmergedPRs) > 0 {
-	response.WriteString("🔄 *PRs In Review:*\n")
-	for i, unmergedPR := range unmergedPRs {
-		prIndex := len(relatedPRs) + i + 1
-		// Display status only if it's not a standard "In Review" status
-		statusDisplay := ""
-		if unmergedPR.Status != "In Review" {
-			statusDisplay = fmt.Sprintf(" *%s*", unmergedPR.Status)
+		response.WriteString("🔄 *PRs In Review:*\n")
+		for i, unmergedPR := range unmergedPRs {
+			prIndex := len(relatedPRs) + i + 1
+			// Display status only if it's not a standard "In Review" status
+			statusDisplay := ""
+			if unmergedPR.Status != "In Review" {
+				statusDisplay = fmt.Sprintf(" *%s*", unmergedPR.Status)
+			}
+			response.WriteString(fmt.Sprintf("*%d. PR #%d*%s\n", prIndex, unmergedPR.Number, statusDisplay))
+			response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
+			response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
+			response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
 		}
-		response.WriteString(fmt.Sprintf("*%d. PR #%d*%s\n", prIndex, unmergedPR.Number, statusDisplay))
-		response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
-		response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
-		response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
-	}
 	}
 
 	// Summary
@@ -955,7 +983,7 @@ func getPatternName(pattern string) string {
 	case "release-v":
 		return "Release-v"
 	case "v":
-		return "Version-prefixed"
+		return "SaaS versions"
 	case "releases/v":
 		return "UI Release"
 	default:
@@ -1134,4 +1162,16 @@ func (s *SlackServer) handleTextCommand(text string) (string, error) {
 	default:
 		return fmt.Sprintf("❌ Unknown command: %s\n\nUse `info` or `help` to see available commands.", command), nil
 	}
+}
+
+// getSaaSVersionBadge returns the badge text for a SaaS version
+func (s *SlackServer) getSaaSVersionBadge(releasedVersion string) string {
+	if s.analyzer == nil {
+		return ""
+	}
+	gitlabClient := s.analyzer.GetGitLabClient()
+	if gitlabClient == nil {
+		return ""
+	}
+	return gitlabClient.GetSaaSVersionBadge(releasedVersion)
 }

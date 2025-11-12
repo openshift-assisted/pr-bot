@@ -623,7 +623,13 @@ func (a *Analyzer) PrintSummary(result *models.PRAnalysisResult) {
 
 							// For Version-prefixed branches, show released versions
 							if len(branch.ReleasedVersions) > 0 {
-								fmt.Printf("\n        %s", strings.Join(branch.ReleasedVersions, ", "))
+								releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
+								// Add badge for SaaS versions
+								if branch.Pattern == "v" && a.gitlabClient != nil {
+									badge := a.gitlabClient.GetSaaSVersionBadge(branch.ReleasedVersions[0])
+									releasedVersionsText += badge
+								}
+								fmt.Printf("\n        %s", releasedVersionsText)
 							}
 
 							if len(branch.UpcomingGAs) == 0 {
@@ -728,7 +734,7 @@ func getPatternDescription(pattern string) string {
 	case "release-v":
 		return "Version-tagged"
 	case "v":
-		return "Version-prefixed"
+		return "SaaS versions"
 	default:
 		return pattern
 	}
@@ -983,4 +989,9 @@ func (a *Analyzer) comparePRCommitWithSnapshot(prCommitSHA, snapshotCommitSHA st
 		prCommitDate.Time, snapshotCommitDate.Time, prBefore)
 
 	return prBefore, nil
+}
+
+// GetGitLabClient returns the GitLab client instance
+func (a *Analyzer) GetGitLabClient() *gitlab.Client {
+	return a.gitlabClient
 }
