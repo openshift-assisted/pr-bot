@@ -834,6 +834,7 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 							// Get badge for the first released version (or all if multiple)
 							badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
 							releasedVersionsText += badge
+							logger.Debug("Final releasedVersionsText with badge: %s", releasedVersionsText)
 						}
 						response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", releasedVersionsText))
 					}
