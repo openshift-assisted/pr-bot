@@ -848,8 +848,11 @@ func (c *Client) GetSaaSVersionBadge(releasedVersion string) string {
 	productionVersion, stageVersion, err := c.GetDeploymentsVersions()
 	if err != nil {
 		logger.Debug("Failed to get deployments versions: %v", err)
+		// Return empty string on error - badge won't be shown
 		return ""
 	}
+
+	logger.Debug("Deployments versions - Production: %s, Stage: %s, Released: %s", productionVersion, stageVersion, releasedVersion)
 
 	// Remove 'v' prefix from released version for comparison
 	releasedVersionClean := strings.TrimPrefix(releasedVersion, "v")
@@ -857,17 +860,17 @@ func (c *Client) GetSaaSVersionBadge(releasedVersion string) string {
 	// Compare with production first
 	if productionVersion != "" {
 		if CompareVersions(productionVersion, releasedVersionClean) > 0 {
-			return " - in production"
+			return " - 'in production'"
 		}
 	}
 
 	// Then compare with stage
 	if stageVersion != "" {
 		if CompareVersions(stageVersion, releasedVersionClean) > 0 {
-			return " - in staging"
+			return " - 'in staging'"
 		}
 	}
 
 	// If neither is bigger, it's not in production or staging yet
-	return " - not in production or staging yet"
+	return " - 'not in production or staging yet'"
 }
