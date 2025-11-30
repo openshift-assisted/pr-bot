@@ -834,7 +834,6 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 							// Get badge for the first released version (or all if multiple)
 							badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
 							releasedVersionsText += badge
-							logger.Debug("Final releasedVersionsText with badge: %s", releasedVersionsText)
 						}
 						response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", releasedVersionsText))
 					}
@@ -1168,15 +1167,11 @@ func (s *SlackServer) handleTextCommand(text string) (string, error) {
 // getSaaSVersionBadge returns the badge text for a SaaS version
 func (s *SlackServer) getSaaSVersionBadge(releasedVersion string) string {
 	if s.analyzer == nil {
-		logger.Debug("Analyzer is nil, cannot get SaaS version badge")
 		return ""
 	}
 	gitlabClient := s.analyzer.GetGitLabClient()
 	if gitlabClient == nil {
-		logger.Debug("GitLab client is nil, cannot get SaaS version badge for version: %s", releasedVersion)
 		return ""
 	}
-	badge := gitlabClient.GetSaaSVersionBadge(releasedVersion)
-	logger.Debug("SaaS version badge for %s: %s", releasedVersion, badge)
-	return badge
+	return gitlabClient.GetSaaSVersionBadge(releasedVersion)
 }

@@ -860,17 +860,17 @@ func (c *Client) GetSaaSVersionBadge(releasedVersion string) string {
 	// Compare with production first
 	if productionVersion != "" {
 		if CompareVersions(productionVersion, releasedVersionClean) > 0 {
-			return " - 'in production'"
+			return " - in production"
 		}
 	}
 
 	// Then compare with stage
 	if stageVersion != "" {
 		if CompareVersions(stageVersion, releasedVersionClean) > 0 {
-			return " - 'in staging'"
+			return " - in staging"
 		}
 	}
 
 	// If neither is bigger, it's not in production or staging yet
-	return " - 'not in production or staging yet'"
+	return " - not in production or staging yet"
 }
