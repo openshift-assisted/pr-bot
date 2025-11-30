@@ -3,6 +3,7 @@ package gitlab
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -27,7 +28,17 @@ type Client struct {
 
 // NewClient creates a new GitLab client.
 func NewClient(ctx context.Context, token string, githubClient *github.Client) *Client {
-	client, _ := gitlab.NewClient(token, gitlab.WithBaseURL("https://gitlab.cee.redhat.com"))
+	// Create HTTP client with TLS skip verification for internal GitLab server
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
+	client, _ := gitlab.NewClient(token,
+		gitlab.WithBaseURL("https://gitlab.cee.redhat.com"),
+		gitlab.WithHTTPClient(httpClient))
+
 	return &Client{
 		client:       client,
 		githubClient: githubClient,
