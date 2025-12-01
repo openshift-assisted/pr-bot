@@ -265,7 +265,18 @@ func (p *Parser) GetAllMCEReleases() ([]ReleaseInfo, error) {
 // mapReleaseToProductVersion maps a release version to product version
 func (p *Parser) mapReleaseToProductVersion(releaseVersion, product string) string {
 	if product == ProductMCE {
-		// MCE versions are offset by MCEVersionOffset
+		// MCE minor version is ACM minor version - MCEVersionOffset
+		// e.g., release-ocm-2.15 -> ACM 2.15.x -> MCE 2.10.x (15-5=10)
+		parts := strings.Split(releaseVersion, ".")
+		if len(parts) >= 2 {
+			if minor, err := strconv.Atoi(parts[1]); err == nil {
+				mceMinor := minor - MCEVersionOffset
+				if mceMinor >= 0 {
+					return fmt.Sprintf("2.%d", mceMinor)
+				}
+			}
+		}
+		// Fallback to original logic if parsing fails
 		if version, err := strconv.ParseFloat(releaseVersion, 64); err == nil {
 			mceVersion := version - float64(MCEVersionOffset)/10.0
 			return fmt.Sprintf("%.1f", mceVersion)
