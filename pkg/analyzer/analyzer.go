@@ -113,8 +113,12 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 		logger.Debug("  %s: %d branches", pattern, count)
 	}
 
-	// Check PR presence in each release branch using goroutines for parallel processing
-	branchPresences := make([]models.BranchPresence, len(branchInfos))
+	// Filter branches based on PR merge date for performance optimization
+	filteredBranches := a.filterRelevantBranches(branchInfos, prInfo.MergedAt)
+	logger.Debug("After filtering: %d relevant branches (saved %d API calls)", len(filteredBranches), len(branchInfos)-len(filteredBranches))
+
+	// Check PR presence in each relevant release branch using goroutines for parallel processing
+	branchPresences := make([]models.BranchPresence, len(filteredBranches))
 
 	// Use a channel to control concurrency (limit to avoid overwhelming GitHub API)
 	concurrencyLimit := 10
@@ -123,7 +127,7 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 	// WaitGroup to wait for all goroutines
 	var wg sync.WaitGroup
 
-	for i, branchInfo := range branchInfos {
+	for i, branchInfo := range filteredBranches {
 		wg.Add(1)
 		go func(index int, branch github.BranchInfo) {
 			defer wg.Done()
@@ -989,6 +993,79 @@ func (a *Analyzer) comparePRCommitWithSnapshot(prCommitSHA, snapshotCommitSHA st
 		prCommitDate.Time, snapshotCommitDate.Time, prBefore)
 
 	return prBefore, nil
+}
+
+// filterRelevantBranches filters branches based on PR merge date to improve performance
+func (a *Analyzer) filterRelevantBranches(branches []github.BranchInfo, prMergedAt *time.Time) []github.BranchInfo {
+	if prMergedAt == nil {
+		// No merge date, can't filter effectively - return all branches
+		return branches
+	}
+
+	var relevant []github.BranchInfo
+	prYear := prMergedAt.Year()
+
+	for _, branch := range branches {
+		if a.isBranchRelevant(branch, prYear, *prMergedAt) {
+			relevant = append(relevant, branch)
+		}
+	}
+
+	return relevant
+}
+
+// isBranchRelevant determines if a branch is worth checking based on PR merge date
+func (a *Analyzer) isBranchRelevant(branch github.BranchInfo, prYear int, prMergedAt time.Time) bool {
+	// Always include current SaaS version branches (they're fast and important)
+	if branch.Pattern == "v" {
+		return true
+	}
+
+	// For OpenShift release branches (release-4.X), filter old branches
+	if branch.Pattern == "release-" {
+		// Extract version number from branch name like "release-4.15"
+		if strings.HasPrefix(branch.Name, "release-4.") {
+			versionStr := strings.TrimPrefix(branch.Name, "release-4.")
+			if dotIndex := strings.Index(versionStr, "."); dotIndex > 0 {
+				versionStr = versionStr[:dotIndex]
+			}
+			if version, err := strconv.Atoi(versionStr); err == nil {
+				// Skip very old OpenShift versions for recent PRs
+				// Keep branches from 2 years ago and newer
+				minVersion := 4.8 // Rough estimate: 4.8 is from ~2021
+				if prYear >= 2024 && float64(version) < minVersion {
+					return false
+				}
+			}
+		}
+	}
+
+	// For ACM/MCE release branches (release-ocm-X), keep recent ones
+	if branch.Pattern == "release-ocm-" {
+		// Extract version from "release-ocm-2.15"
+		if strings.HasPrefix(branch.Name, "release-ocm-") {
+			versionStr := strings.TrimPrefix(branch.Name, "release-ocm-")
+			if dotIndex := strings.Index(versionStr, "."); dotIndex > 0 {
+				versionStr = versionStr[:dotIndex]
+			}
+			if version, err := strconv.ParseFloat(versionStr, 64); err == nil {
+				// Skip very old ACM versions for recent PRs
+				minVersion := 2.4 // Keep from ACM 2.4 onwards for recent PRs
+				if prYear >= 2024 && version < minVersion {
+					return false
+				}
+			}
+		}
+	}
+
+	// For release-v branches (assisted-installer-ui), keep recent ones
+	if branch.Pattern == "release-v" {
+		// These are typically less frequent, keep more of them
+		return true
+	}
+
+	// Keep other patterns by default
+	return true
 }
 
 // GetGitLabClient returns the GitLab client instance

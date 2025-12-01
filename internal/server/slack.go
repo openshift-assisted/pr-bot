@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shay23bra/pr-bot/internal/github"
@@ -301,101 +302,50 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 		AnalysisSuccess: true,
 	}
 
-	// Analyze each related PR (both merged and unmerged)
+	// Analyze each related PR (both merged and unmerged) in parallel
 	var relatedPRs []models.RelatedPR
 	var unmergedPRs []models.UnmergedPR
+	var mu sync.Mutex // Protect shared slices
 
-	logger.Debug("Starting analysis of %d unique PR URLs", len(uniquePRURLs))
+	logger.Debug("Starting parallel analysis of %d unique PR URLs", len(uniquePRURLs))
+
+	// Create worker pool for parallel processing
+	const maxWorkers = 3 // Limit to avoid GitHub API rate limiting
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+
 	for i, prURL := range uniquePRURLs {
-		logger.Debug("Processing PR %d/%d: %s", i+1, len(uniquePRURLs), prURL)
-		// Parse PR URL to get number, owner, repo
-		prNumber, owner, repo, err := parsePRURL(prURL)
-		if err != nil {
-			logger.Debug("Failed to parse PR URL %s: %v", prURL, err)
-			continue
-		}
+		wg.Add(1)
+		go func(index int, url string) {
+			defer wg.Done()
 
-		// Update config with repository info for this PR
-		originalOwner := s.config.Owner
-		originalRepo := s.config.Repository
-		s.config.Owner = owner
-		s.config.Repository = repo
+			// Acquire semaphore
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-		// Create analyzer for this specific repository
-		analyzer := analyzer.New(ctx, s.config)
-		if analyzer == nil {
-			logger.Debug("Failed to create analyzer for PR %d, checking if it's unmerged", prNumber)
-			// If analyzer creation fails, still try to get basic PR info to check if it's unmerged
-			ctx := context.Background()
-			githubClient := github.NewClient(ctx, s.config.GitHubToken)
-			prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
-			if prErr != nil {
-				logger.Debug("Failed to get basic info for PR %d: %v", prNumber, prErr)
-			} else if prInfo.MergedAt == nil {
-				// It's an unmerged PR
-				unmergedPR := models.UnmergedPR{
-					Number: prInfo.Number,
-					Title:  prInfo.Title,
-					URL:    prInfo.URL,
-					Status: "In Review",
-				}
-				unmergedPRs = append(unmergedPRs, unmergedPR)
-				logger.Debug("Added unmerged PR #%d to results (analyzer creation failed): %s", prNumber, prInfo.Title)
+			logger.Debug("Processing PR %d/%d: %s", index+1, len(uniquePRURLs), url)
+
+			// Parse PR URL to get number, owner, repo
+			prNumber, owner, repo, err := parsePRURL(url)
+			if err != nil {
+				logger.Debug("Failed to parse PR URL %s: %v", url, err)
+				return
 			}
-			s.config.Owner = originalOwner
-			s.config.Repository = originalRepo
-			continue
-		}
 
-		// Try to analyze the PR
-		result, err := analyzer.AnalyzePR(prNumber)
-		if err != nil {
-			logger.Debug("PR %d analysis failed with error: %s", prNumber, err.Error())
-			// Check if it's an unmerged PR
-			if strings.Contains(err.Error(), "is not merged") || strings.Contains(err.Error(), "not merged") {
-				logger.Debug("Detected unmerged PR %d, getting basic info", prNumber)
-				// Get basic PR info for unmerged PR
-				ctx := context.Background()
-				githubClient := github.NewClient(ctx, s.config.GitHubToken)
-				prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
-				if prErr != nil {
-					logger.Debug("Failed to get basic info for unmerged PR %d: %v", prNumber, prErr)
-					// Even if we can't get basic info, still add it as an unmerged PR with minimal info
-					unmergedPR := models.UnmergedPR{
-						Number: prNumber,
-						Title:  fmt.Sprintf("PR #%d (unmerged)", prNumber),
-						URL:    prURL,
-						Status: "In Review",
-					}
-					unmergedPRs = append(unmergedPRs, unmergedPR)
-					logger.Debug("Added unmerged PR #%d to results (basic info failed): %s", prNumber, prURL)
-				} else {
-					unmergedPR := models.UnmergedPR{
-						Number: prInfo.Number,
-						Title:  prInfo.Title,
-						URL:    prInfo.URL,
-						Status: "In Review",
-					}
-					unmergedPRs = append(unmergedPRs, unmergedPR)
-					logger.Debug("Added unmerged PR #%d to results: %s", prNumber, prInfo.Title)
-				}
-			} else {
-				logger.Debug("Failed to analyze PR %d (not unmerged), getting basic info", prNumber)
-				// For other analysis failures, still try to get basic PR info
-				ctx := context.Background()
-				githubClient := github.NewClient(ctx, s.config.GitHubToken)
+			// Create config copy for this worker (avoid config races)
+			workerConfig := *s.config
+			workerConfig.Owner = owner
+			workerConfig.Repository = repo
+
+			// Create analyzer for this specific repository
+			analyzer := analyzer.New(ctx, &workerConfig)
+			if analyzer == nil {
+				logger.Debug("Failed to create analyzer for PR %d, checking if it's unmerged", prNumber)
+				// If analyzer creation fails, still try to get basic PR info to check if it's unmerged
+				githubClient := github.NewClient(ctx, workerConfig.GitHubToken)
 				prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
 				if prErr != nil {
 					logger.Debug("Failed to get basic info for PR %d: %v", prNumber, prErr)
-					// Even if we can't get basic info, still add it as an unmerged PR with minimal info
-					unmergedPR := models.UnmergedPR{
-						Number: prNumber,
-						Title:  fmt.Sprintf("PR #%d (analysis failed)", prNumber),
-						URL:    prURL,
-						Status: "Analysis Failed",
-					}
-					unmergedPRs = append(unmergedPRs, unmergedPR)
-					logger.Debug("Added PR #%d to results (analysis failed): %s", prNumber, prURL)
 				} else if prInfo.MergedAt == nil {
 					// It's an unmerged PR
 					unmergedPR := models.UnmergedPR{
@@ -404,41 +354,117 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 						URL:    prInfo.URL,
 						Status: "In Review",
 					}
+					mu.Lock()
 					unmergedPRs = append(unmergedPRs, unmergedPR)
-					logger.Debug("Added unmerged PR #%d to results (analysis failed): %s", prNumber, prInfo.Title)
-				} else {
-					// It's a merged PR but analysis failed - add it as unmerged with error status
-					unmergedPR := models.UnmergedPR{
-						Number: prInfo.Number,
-						Title:  prInfo.Title,
-						URL:    prInfo.URL,
-						Status: "Analysis Failed",
-					}
-					unmergedPRs = append(unmergedPRs, unmergedPR)
-					logger.Debug("Added merged PR #%d to results (analysis failed): %s", prNumber, prInfo.Title)
+					mu.Unlock()
+					logger.Debug("Added unmerged PR #%d to results (analyzer creation failed): %s", prNumber, prInfo.Title)
 				}
+				return
 			}
-			// Restore original config
-			s.config.Owner = originalOwner
-			s.config.Repository = originalRepo
-			continue
-		}
 
-		// Create RelatedPR entry for merged PR
-		relatedPR := models.RelatedPR{
-			Number:          result.PR.Number,
-			Title:           result.PR.Title,
-			URL:             result.PR.URL,
-			Hash:            result.PR.Hash,
-			JiraTickets:     []string{ticketID}, // Associate with the main ticket
-			ReleaseBranches: result.ReleaseBranches,
-		}
-		relatedPRs = append(relatedPRs, relatedPR)
+			// Try to analyze the PR
+			result, err := analyzer.AnalyzePR(prNumber)
+			if err != nil {
+				logger.Debug("PR %d analysis failed with error: %s", prNumber, err.Error())
+				// Check if it's an unmerged PR
+				if strings.Contains(err.Error(), "is not merged") || strings.Contains(err.Error(), "not merged") {
+					logger.Debug("Detected unmerged PR %d, getting basic info", prNumber)
+					// Get basic PR info for unmerged PR
+					githubClient := github.NewClient(ctx, workerConfig.GitHubToken)
+					prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
+					if prErr != nil {
+						logger.Debug("Failed to get basic info for unmerged PR %d: %v", prNumber, prErr)
+						// Even if we can't get basic info, still add it as an unmerged PR with minimal info
+						unmergedPR := models.UnmergedPR{
+							Number: prNumber,
+							Title:  fmt.Sprintf("PR #%d (unmerged)", prNumber),
+							URL:    url,
+							Status: "In Review",
+						}
+						mu.Lock()
+						unmergedPRs = append(unmergedPRs, unmergedPR)
+						mu.Unlock()
+						logger.Debug("Added unmerged PR #%d to results (basic info failed): %s", prNumber, url)
+					} else {
+						unmergedPR := models.UnmergedPR{
+							Number: prInfo.Number,
+							Title:  prInfo.Title,
+							URL:    prInfo.URL,
+							Status: "In Review",
+						}
+						mu.Lock()
+						unmergedPRs = append(unmergedPRs, unmergedPR)
+						mu.Unlock()
+						logger.Debug("Added unmerged PR #%d to results: %s", prNumber, prInfo.Title)
+					}
+				} else {
+					logger.Debug("Failed to analyze PR %d (not unmerged), getting basic info", prNumber)
+					// For other analysis failures, still try to get basic PR info
+					githubClient := github.NewClient(ctx, workerConfig.GitHubToken)
+					prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
+					if prErr != nil {
+						logger.Debug("Failed to get basic info for PR %d: %v", prNumber, prErr)
+						// Even if we can't get basic info, still add it as an unmerged PR with minimal info
+						unmergedPR := models.UnmergedPR{
+							Number: prNumber,
+							Title:  fmt.Sprintf("PR #%d (analysis failed)", prNumber),
+							URL:    url,
+							Status: "Analysis Failed",
+						}
+						mu.Lock()
+						unmergedPRs = append(unmergedPRs, unmergedPR)
+						mu.Unlock()
+						logger.Debug("Added PR #%d to results (analysis failed): %s", prNumber, url)
+					} else if prInfo.MergedAt == nil {
+						// It's an unmerged PR
+						unmergedPR := models.UnmergedPR{
+							Number: prInfo.Number,
+							Title:  prInfo.Title,
+							URL:    prInfo.URL,
+							Status: "In Review",
+						}
+						mu.Lock()
+						unmergedPRs = append(unmergedPRs, unmergedPR)
+						mu.Unlock()
+						logger.Debug("Added unmerged PR #%d to results (analysis failed): %s", prNumber, prInfo.Title)
+					} else {
+						// It's a merged PR but analysis failed - add it as unmerged with error status
+						unmergedPR := models.UnmergedPR{
+							Number: prInfo.Number,
+							Title:  prInfo.Title,
+							URL:    prInfo.URL,
+							Status: "Analysis Failed",
+						}
+						mu.Lock()
+						unmergedPRs = append(unmergedPRs, unmergedPR)
+						mu.Unlock()
+						logger.Debug("Added merged PR #%d to results (analysis failed): %s", prNumber, prInfo.Title)
+					}
+				}
+				return
+			}
 
-		// Restore original config
-		s.config.Owner = originalOwner
-		s.config.Repository = originalRepo
+			// Create RelatedPR entry for merged PR
+			relatedPR := models.RelatedPR{
+				Number:          result.PR.Number,
+				Title:           result.PR.Title,
+				URL:             result.PR.URL,
+				Hash:            result.PR.Hash,
+				JiraTickets:     []string{ticketID}, // Associate with the main ticket
+				ReleaseBranches: result.ReleaseBranches,
+			}
+
+			mu.Lock()
+			relatedPRs = append(relatedPRs, relatedPR)
+			mu.Unlock()
+
+			logger.Debug("Completed analysis for PR #%d: %s", prNumber, result.PR.Title)
+		}(i, prURL)
 	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+	logger.Debug("Parallel PR analysis completed: %d merged, %d unmerged", len(relatedPRs), len(unmergedPRs))
 
 	// Format response for Slack
 	return s.formatJiraAnalysisForSlack(jiraAnalysis, relatedPRs, unmergedPRs), nil
