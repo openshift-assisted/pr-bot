@@ -138,12 +138,12 @@ func main() {
 
 		fmt.Printf("📊 Data Source Information:\n")
 		fmt.Printf("Source: Google Sheets API\n")
-		if cfg.GoogleAPIKey != "" && cfg.GoogleSheetID != "" {
+		if cfg.GoogleServiceAccountJSON != "" && cfg.GoogleSheetID != "" {
 			fmt.Printf("Status: ✅ Google Sheets configured\n")
 			fmt.Printf("Sheet ID: %s\n", cfg.GoogleSheetID)
 		} else {
 			fmt.Printf("Status: ❌ Google Sheets not configured\n")
-			fmt.Printf("Required: PR_BOT_GOOGLE_API_KEY and PR_BOT_GOOGLE_SHEET_ID\n")
+			fmt.Printf("Required: PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON and PR_BOT_GOOGLE_SHEET_ID\n")
 		}
 		return
 	}
@@ -472,7 +472,7 @@ func handleMCEVersionComparison(component, version string) {
 	}
 
 	// Load GA parser
-	gaParser, err := ga.NewParser(cfg.GoogleAPIKey, cfg.GoogleSheetID)
+	gaParser, err := ga.NewParser(cfg.GoogleServiceAccountJSON, cfg.GoogleSheetID)
 	if err != nil {
 		log.Fatalf("Failed to create GA parser: %v", err)
 	}

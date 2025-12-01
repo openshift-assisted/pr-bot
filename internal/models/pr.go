@@ -123,14 +123,14 @@ type UnmergedPR struct {
 
 // Config represents the application configuration.
 type Config struct {
-	GitHubToken   string `json:"github_token"`
-	Repository    string `json:"repository"`
-	Owner         string `json:"owner"`
-	BranchPrefix  string `json:"branch_prefix"`
-	DefaultBranch string `json:"default_branch"`
-	SlackBotToken string `json:"slack_bot_token"`
-	GitLabToken   string `json:"gitlab_token"`
-	JiraToken     string `json:"jira_token"`
-	GoogleAPIKey  string `json:"google_api_key"`
-	GoogleSheetID string `json:"google_sheet_id"`
+	GitHubToken              string `json:"github_token"`
+	Repository               string `json:"repository"`
+	Owner                    string `json:"owner"`
+	BranchPrefix             string `json:"branch_prefix"`
+	DefaultBranch            string `json:"default_branch"`
+	SlackBotToken            string `json:"slack_bot_token"`
+	GitLabToken              string `json:"gitlab_token"`
+	JiraToken                string `json:"jira_token"`
+	GoogleSheetID            string `json:"google_sheet_id"`
+	GoogleServiceAccountJSON string `json:"google_service_account_json"`
 }

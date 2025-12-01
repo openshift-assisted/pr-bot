@@ -42,18 +42,18 @@ type Analyzer struct {
 func New(ctx context.Context, config *models.Config) *Analyzer {
 	githubClient := github.NewClient(ctx, config.GitHubToken)
 
-	// Create GA parser - requires Google Sheets configuration
+	// Create GA parser - requires Google Sheets configuration with service account
 	var gaParser *ga.Parser
-	if config.GoogleAPIKey != "" && config.GoogleSheetID != "" {
+	if config.GoogleServiceAccountJSON != "" && config.GoogleSheetID != "" {
 		logger.Debug("Using Google Sheets for GA data (Sheet ID: %s)", config.GoogleSheetID)
 		var err error
-		gaParser, err = ga.NewParser(config.GoogleAPIKey, config.GoogleSheetID)
+		gaParser, err = ga.NewParser(config.GoogleServiceAccountJSON, config.GoogleSheetID)
 		if err != nil {
 			logger.Debug("Failed to create Google Sheets parser: %v", err)
 			return nil
 		}
 	} else {
-		logger.Debug("Google Sheets configuration missing (PR_BOT_GOOGLE_API_KEY and PR_BOT_GOOGLE_SHEET_ID required)")
+		logger.Debug("Google Sheets configuration missing (PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON and PR_BOT_GOOGLE_SHEET_ID required)")
 		return nil
 	}
 	// Slack integration is now handled by the server component

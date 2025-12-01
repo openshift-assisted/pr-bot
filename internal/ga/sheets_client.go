@@ -19,22 +19,20 @@ import (
 type SheetsClient struct {
 	service *sheets.Service
 	sheetID string
-	apiKey  string
 }
 
-// NewSheetsClient creates a new Google Sheets client
-func NewSheetsClient(apiKey, sheetID string) (*SheetsClient, error) {
+// NewSheetsClient creates a new Google Sheets client using service account authentication
+func NewSheetsClient(serviceAccountJSON, sheetID string) (*SheetsClient, error) {
 	ctx := context.Background()
 
-	service, err := sheets.NewService(ctx, option.WithAPIKey(apiKey))
+	service, err := sheets.NewService(ctx, option.WithCredentialsJSON([]byte(serviceAccountJSON)))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create sheets service: %w", err)
+		return nil, fmt.Errorf("failed to create sheets service with service account: %w", err)
 	}
 
 	return &SheetsClient{
 		service: service,
 		sheetID: sheetID,
-		apiKey:  apiKey,
 	}, nil
 }
 

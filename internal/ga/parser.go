@@ -51,13 +51,14 @@ type parsedData struct {
 	lastParsed         time.Time
 }
 
-// NewParser creates a new GA parser that uses Google Sheets API.
-func NewParser(apiKey, sheetID string) (*Parser, error) {
-	if apiKey == "" || sheetID == "" {
-		return nil, fmt.Errorf("Google API key and Sheet ID are required")
+// NewParser creates a new GA parser that uses Google Sheets API with service account authentication.
+func NewParser(serviceAccountJSON, sheetID string) (*Parser, error) {
+	if serviceAccountJSON == "" || sheetID == "" {
+		return nil, fmt.Errorf("Google service account JSON and Sheet ID are required")
 	}
 
-	sheetsClient, err := NewSheetsClient(apiKey, sheetID)
+	logger.Debug("Using service account authentication for Google Sheets")
+	sheetsClient, err := NewSheetsClient(serviceAccountJSON, sheetID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sheets client: %w", err)
 	}

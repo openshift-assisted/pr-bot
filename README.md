@@ -14,7 +14,7 @@ A Go-based tool to analyze merged pull requests and determine their presence acr
 ### CLI Mode
 ```bash
 # Install latest release  
-go install github.com/shay23bra/pr-bot@latest
+go install github.com/openshift-assisted/pr-bot@latest
 
 # Add Go bin to PATH (if needed)  
 export PATH=$PATH:~/go/bin
@@ -43,9 +43,9 @@ PR_BOT_JIRA_TOKEN=your_jira_token_here
 # Required for Slack bot server mode (OAuth bot token)
 PR_BOT_SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 
-# Required: Google Sheets for GA data
-PR_BOT_GOOGLE_API_KEY=your_google_api_key_here
-PR_BOT_GOOGLE_SHEET_ID=your_google_sheet_id_here
+# Required: Google Sheets for GA data (service account for private sheets)
+PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project", "private_key_id": "...", "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n", "client_email": "your-service-account@project-id.iam.gserviceaccount.com", "client_id": "...", "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}'
+PR_BOT_GOOGLE_SHEET_ID=your_private_google_sheet_id_here
 EOF
 
 # Start server
@@ -67,6 +67,7 @@ pr-bot -server
 - **PR Analysis**: Get detailed information about merged pull requests including commit hash and merge date
 - **Release Branch Tracking**: Automatically discover and check all release branches matching patterns
 - **Version Detection**: Extract version numbers from branch names and report which versions contain changes
+- **SaaS Version Badges**: Real-time deployment status badges showing production/staging/not deployed status from GitLab
 - **JIRA Integration**: Analyze all PRs related to a JIRA ticket including backports
 - **MCE Validation**: Verify commits against MCE GitLab snapshots with SHA extraction
 
@@ -90,16 +91,17 @@ This tool uses **Google Sheets API** as the exclusive data source for GA (Genera
 
 - **✅ Real-time Data**: Always uses the latest release schedule from Google Sheets
 - **🔄 Live Updates**: Changes reflect immediately without redeployment
-- **🔐 Secure Access**: API key authentication with configurable restrictions
+- **🔐 Secure Access**: Service account authentication for private sheets
 - **📱 Easy Maintenance**: Familiar spreadsheet interface for data management
 - **🚀 No Rebuilds**: Update GA data through Google Sheets without touching code
+- **🔒 Private Sheets**: Full support for private Google Sheets with proper authentication
 
 ### 📋 **Required Configuration**
 
 Both environment variables are **required** for the tool to function:
 
 ```bash
-export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
+export PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project", ...}'
 export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
 ```
 
@@ -109,10 +111,11 @@ export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
 - ✅ **Collaborative**: Multiple users can maintain the release schedule
 - ✅ **Audit Trail**: Google Sheets provides change history
 - ✅ **Simplified Deployment**: No data files to manage
+- ✅ **Private Access**: Works with private sheets through service account authentication
 
 ### 🔍 **Check Your Configuration**
 ```bash
-pr-bot --config
+pr-bot --data-source
 # Shows your current configuration including Google Sheets setup
 ```
 
@@ -121,10 +124,10 @@ pr-bot --config
 ### Option 1: Install via Go (Recommended)
 ```bash
 # Install latest stable release (recommended)
-go install github.com/shay23bra/pr-bot@v0.0.3
+go install github.com/openshift-assisted/pr-bot@latest
 
-# Or install from production branch
-go install github.com/shay23bra/pr-bot@latest
+# Or install from development branch
+go install github.com/openshift-assisted/pr-bot@master
 
 # Add Go bin directory to PATH (if not already done)
 echo 'export PATH=$PATH:~/go/bin' >> ~/.bashrc
@@ -137,7 +140,7 @@ pr-bot -version
 ### Option 2: Download Binary
 ```bash
 # Download from GitHub releases (replace VERSION with actual version)
-wget https://github.com/shay23bra/pr-bot/releases/latest/download/pr-bot-linux-amd64
+wget https://github.com/openshift-assisted/pr-bot/releases/latest/download/pr-bot-linux-amd64
 chmod +x pr-bot-linux-amd64
 mv pr-bot-linux-amd64 pr-bot
 
@@ -150,18 +153,18 @@ sudo mv pr-bot /usr/local/bin/
 #### 🚀 Build from Source
 ```bash
 # Clone repository
-git clone https://github.com/shay23bra/pr-bot.git
+git clone https://github.com/openshift-assisted/pr-bot.git
 cd pr-bot
 
 # Build the application
 go build .
 
 # Configure Google Sheets access (required)
-export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
+export PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project", ...}'
 export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
 
 # Verify configuration
-./pr-bot --config
+./pr-bot --data-source
 ```
 
 
@@ -169,13 +172,13 @@ export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
 **For project maintainers who can build and release new versions:**
 
 ⚠️ **Requirements for Building/Releasing:**
-- Google Sheets API access (API key and Sheet ID)
+- Google Sheets API access (service account JSON and Sheet ID)
 - GitHub repository write access
 - Being listed in the GitHub Actions workflow conditions
 
 ```bash
 # Clone repository
-git clone https://github.com/shay23bra/pr-bot.git
+git clone https://github.com/openshift-assisted/pr-bot.git
 cd pr-bot
 
 # Build CLI distribution version
@@ -196,7 +199,7 @@ gh release create v0.X.X --title "vX.X.X - Release Title" --notes "Release notes
 
 - Go 1.21 or later (if building from source)
 - **GitHub token (REQUIRED)** - For API access
-- **GitLab token (REQUIRED)** - For MCE validation  
+- **GitLab token (REQUIRED)** - For SaaS version badges and MCE validation  
 - **JIRA token (REQUIRED)** - For JIRA ticket analysis
 - **Red Hat VPN connection (REQUIRED)** - For accessing internal GitLab and JIRA APIs
 - **Google Sheets API access (REQUIRED)** - For GA release schedule data
@@ -246,9 +249,9 @@ For JIRA ticket analysis, you'll need a JIRA API token:
 - The token should have read access to JIRA issues
 - Used to find cloned tickets and extract GitHub PR URLs from JIRA tickets
 
-### GitLab Token Setup (Optional for MCE Validation)
+### GitLab Token Setup (Required for SaaS Badges and MCE Validation)
 
-For MCE snapshot validation (used in PR analysis and version comparison), you'll need a GitLab API token:
+For SaaS version deployment badges and MCE snapshot validation (used in PR analysis and version comparison), you'll need a GitLab API token:
 
 1. **Get GitLab API Token**:
    - Go to [GitLab Personal Access Tokens](https://gitlab.cee.redhat.com/-/user_settings/personal_access_tokens)
@@ -269,51 +272,64 @@ For MCE snapshot validation (used in PR analysis and version comparison), you'll
      ```
 
 **Important Notes:**
+- Required for SaaS version deployment badges (reads deployments.yaml for production/staging status)
 - Required for MCE snapshot validation (SHA extraction from down-sha.yaml)
-- Used in PR analysis to validate against MCE snapshots  
+- Used in PR analysis to validate against MCE snapshots
 - Enables version comparison features (`-v` flag)
-- Token should have `read_api` scope to access MCE repository files
+- Token should have `read_api` scope to access repository files
 
 ### Google Sheets Setup (Required for GA Data)
 
-The tool requires Google Sheets API access for GA release schedule data:
+The tool requires Google Sheets API access using service account authentication for private sheet access:
 
-1. **Get Google API Key**:
+1. **Create Google Cloud Service Account**:
    - Go to [Google Cloud Console](https://console.cloud.google.com/)
    - Create a new project or select an existing one
-   - Enable the "Google Sheets API"
-   - Go to "Credentials" → "Create Credentials" → "API Key"
-   - Copy the generated API key
-   - (Optional) Restrict the key to "Google Sheets API" for security
+   - Enable the "Google Sheets API" in APIs & Services > Library
+   - Go to "IAM & Admin" > "Service Accounts"
+   - Click "Create Service Account"
+   - Give it a name (e.g., "pr-bot-sheets") and click "Create and Continue"
+   - Skip the optional roles and click "Done"
 
-2. **Get Google Sheet ID**:
-   - Open your Google Sheet (e.g., ACM/MCE release schedule)
+2. **Generate Service Account Credentials**:
+   - Click on the newly created service account
+   - Go to the "Keys" tab
+   - Click "Add Key" > "Create new key"
+   - Select "JSON" format and click "Create"
+   - This downloads a JSON file containing your service account credentials
+
+3. **Share Google Sheet with Service Account**:
+   - Open the JSON file and find the "client_email" field
+   - Go to your private Google Sheet (e.g., ACM/MCE release schedule)
+   - Click "Share" and add the service account email with "Viewer" permission
+   - Make sure "Notify people" is unchecked
+
+4. **Get Google Sheet ID**:
    - Copy the Sheet ID from the URL: `https://docs.google.com/spreadsheets/d/SHEET_ID_HERE/edit`
-   - Make sure the sheet is accessible with the API key (either public or shared)
 
-3. **Set as environment variables**:
+5. **Set as environment variables**:
    - **For CLI usage:**
      ```bash
-     export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
+     export PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project", ...}'
      export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
      ```
    - **For Slack server usage (add to .env file):**
      ```bash
-     echo "PR_BOT_GOOGLE_API_KEY=your-google-api-key" >> .env
+     echo "PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='your-service-account-json-content'" >> .env
      echo "PR_BOT_GOOGLE_SHEET_ID=your-google-sheet-id" >> .env
      ```
 
 **Important Notes:**
-- **Recommended**: Provides real-time data without rebuilding binaries
+- **Private Sheets**: Works with private Google Sheets through service account authentication
 - **Sheet Structure**: Must have "In Progress" and "Completed Releases" tabs
-- **Required**: Both API key and Sheet ID must be configured for the tool to work
-- **Security**: Keep your API key secure and consider IP restrictions
-- **Access**: Sheet must be accessible with your API key (public or shared)
+- **Required**: Both service account JSON and Sheet ID must be configured
+- **Security**: Keep your service account JSON secure and restrict permissions appropriately
+- **Access**: Service account must be shared with the Google Sheet
 
 ### Setup
 
 ```bash
-git clone https://github.com/shay23bra/pr-bot.git
+git clone https://github.com/openshift-assisted/pr-bot.git
 cd pr-bot
 go mod tidy
 ```
@@ -339,16 +355,18 @@ PR_BOT_GITHUB_REPOSITORY=assisted-service
 PR_BOT_GITHUB_BRANCH_PREFIX=release-ocm-
 PR_BOT_GITHUB_DEFAULT_BRANCH=master
 
-# Slack Configuration
-PR_BOT_SLACK_XOXD=xoxd-your-browser-token-here
-PR_BOT_SLACK_XOXC=xoxc-your-browser-token-here
-PR_BOT_SLACK_CHANNEL=team-acm-downstream-notifcation
+# Slack Bot Configuration (OAuth bot token for server mode)
+PR_BOT_SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 
 # GitLab Configuration (for MCE snapshot validation)
 PR_BOT_GITLAB_TOKEN=your-gitlab-token-here
 
 # JIRA Configuration (for MGMT ticket analysis)
 PR_BOT_JIRA_TOKEN=your-jira-token-here
+
+# Google Sheets Configuration (Required - service account for private sheets)
+PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project", "private_key_id": "...", "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n", "client_email": "your-service-account@project-id.iam.gserviceaccount.com", "client_id": "...", "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}'
+PR_BOT_GOOGLE_SHEET_ID=your-private-google-sheet-id-here
 ```
 
 ### Optional: Build Binary
@@ -375,7 +393,7 @@ export PR_BOT_GITHUB_DEFAULT_BRANCH="master"
 export PR_BOT_SLACK_BOT_TOKEN="xoxb-your-bot-token-here"
 
 # Google Sheets Configuration (Required for GA data)
-export PR_BOT_GOOGLE_API_KEY="your-google-api-key"
+export PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project", ...}'
 export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
 
 # GitLab Configuration (Optional for MCE validation)
@@ -397,13 +415,24 @@ github:
   branch_prefix: "release-ocm-"
   default_branch: "master"
 slack:
-  xoxd: "xoxd-your-browser-token-here"
-  xoxc: "xoxc-your-browser-token-here"
-  channel: "team-acm-downstream-notifcation"
+  bot_token: "xoxb-your-bot-token-here"
 gitlab:
   token: "your-gitlab-token-here"
 jira:
   token: "your-jira-token-here"
+google:
+  service_account_json: |
+    {
+      "type": "service_account",
+      "project_id": "your-project",
+      "private_key_id": "...",
+      "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
+      "client_email": "your-service-account@project-id.iam.gserviceaccount.com",
+      "client_id": "...",
+      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+      "token_uri": "https://oauth2.googleapis.com/token"
+    }
+  sheet_id: "your-google-sheet-id"
 ```
 
 ### Default Configuration
@@ -548,8 +577,8 @@ The tool automatically checks for updates when running CLI commands:
 $ pr-bot -pr https://github.com/openshift/assisted-service/pull/1234
 
 ⚠️  A newer version is available: 0.1.0 (current: 0.0.1)
-📦 Update with: go install github.com/shay23bra/pr-bot@latest
-🔗 Or download from: https://github.com/shay23bra/pr-bot/releases/latest
+📦 Update with: go install github.com/openshift-assisted/pr-bot@latest
+🔗 Or download from: https://github.com/openshift-assisted/pr-bot/releases/latest
 
 # Then it continues with normal execution...
 ```
@@ -604,7 +633,7 @@ This was fixed in v0.0.3. If you see this error, clean your module cache:
 ```bash
 # Clear module cache and reinstall
 go clean -modcache
-go install github.com/shay23bra/pr-bot@latest
+go install github.com/openshift-assisted/pr-bot@latest
 ```
 
 ### Rate Limit Issues
@@ -660,7 +689,7 @@ go build -tags=embedded .     # embedded version (maintainers only)
 echo "🚀 Installing pr-bot..."
 
 # Install latest version
-go install github.com/shay23bra/pr-bot@latest
+go install github.com/openshift-assisted/pr-bot@latest
 
 # Verify installation
 pr-bot -version
@@ -745,26 +774,6 @@ Debug mode provides detailed logging including:
 ./pr-bot
 ```
 
-### Search Slack for PR Messages (Legacy)
-
-```bash
-go run main.go -slack
-```
-
-### Search Slack with Custom Limit (Legacy)
-
-```bash
-go run main.go -slack -slack-limit 200
-```
-
-### Search for Latest Version Message (Legacy)
-
-```bash
-go run main.go -version 2.13
-```
-
-This finds the latest message in the Slack channel that contains the specified version and includes an "Upstream SHA list" link.
-
 ### Example Output
 
 ```
@@ -795,43 +804,6 @@ URL: https://github.com/openshift/assisted-service/pull/1234
   - release-ocm-2.11 (version 2.11)
 
 Analysis completed at: 2024-01-20 16:30:00 +0000 UTC
-```
-
-### Slack Search Example Output
-
-```
-=== Slack Search Results ===
-Channel: team-acm-downstream-notifcation
-Messages searched: 100
-PR-related messages found: 3
-
-PR References Found:
-  PR #1234 - 2024-01-15 14:30:00
-    Message: Merged PR #1234 to release-ocm-2.13
-    User: U1234567890
-
-  PR #1235 - 2024-01-16 09:15:00
-    Message: Backported PR #1235 to release-ocm-2.14
-    User: U0987654321
-
-  PR #1236 - 2024-01-17 11:45:00
-    Message: PR #1236 is ready for review
-    User: U1122334455
-```
-
-### Version Search Example Output
-
-```
-=== Version Search Results ===
-Target Version: 2.13
-Channel: team-acm-downstream-notifcation
-Messages searched: 100
-
-Latest message found:
-  Timestamp: 2024-01-15 14:30:00
-  User: U1234567890
-  Upstream SHA List: https://github.com/openshift/assisted-service/compare/upstream-2.13...release-ocm-2.13
-  Message: ACM 2.13.3 is ready for release. Upstream SHA list: https://github.com/openshift/assisted-service/compare/upstream-2.13...release-ocm-2.13
 ```
 
 ### GA Status Meanings
