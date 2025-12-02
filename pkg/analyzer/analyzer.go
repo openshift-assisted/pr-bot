@@ -850,78 +850,6 @@ func (a *Analyzer) performMCEValidation(upcomingGAs []models.UpcomingGA, prCommi
 	return validatedGAs
 }
 
-// findACMMCEVersionsForUIRelease finds ACM/MCE versions that contain a specific UI version.
-func (a *Analyzer) findACMMCEVersionsForUIRelease(uiVersion string, mergedAt *time.Time) []models.UpcomingGA {
-	if a.gitlabClient == nil {
-		logger.Debug("No GitLab client available for UI version lookup")
-		return nil
-	}
-
-	logger.Debug("Finding ACM/MCE versions containing UI version %s", uiVersion)
-
-	// Get all MCE releases
-	allReleases, err := a.gaParser.GetAllMCEReleases()
-	if err != nil {
-		logger.Debug("Failed to get MCE releases: %v", err)
-		return nil
-	}
-
-	var matchingVersions []models.UpcomingGA
-
-	// Only check recent releases (within last 12 months) to avoid excessive API calls
-	now := time.Now()
-	cutoffDate := now.AddDate(-1, 0, 0) // 12 months ago
-
-	logger.Debug("Limiting search to MCE releases after %s", cutoffDate.Format("2006-01-02"))
-
-	// Search through recent MCE versions to find matches
-	for _, release := range allReleases {
-		// Skip old releases to reduce API calls
-		if release.GADate == nil || release.GADate.Before(cutoffDate) {
-			continue
-		}
-
-		// Try both ACM and MCE versions
-		if release.ACMVersion != "" {
-			logger.Debug("Checking ACM version %s for UI version %s", release.ACMVersion, uiVersion)
-			if a.checkUIVersionInMCERelease("ACM", release.ACMVersion, release.GADate, uiVersion) {
-				matchingVersions = append(matchingVersions, models.UpcomingGA{
-					Product: "ACM",
-					Version: release.ACMVersion,
-					GADate:  release.GADate,
-				})
-			}
-		}
-
-		if release.MCEVersion != "" {
-			logger.Debug("Checking MCE version %s for UI version %s", release.MCEVersion, uiVersion)
-			if a.checkUIVersionInMCERelease("MCE", release.MCEVersion, release.GADate, uiVersion) {
-				matchingVersions = append(matchingVersions, models.UpcomingGA{
-					Product: "MCE",
-					Version: release.MCEVersion,
-					GADate:  release.GADate,
-				})
-			}
-		}
-	}
-
-	logger.Debug("Found %d matching ACM/MCE versions for UI version %s", len(matchingVersions), uiVersion)
-
-	// If no matches found, create a placeholder indicating the search was performed
-	if len(matchingVersions) == 0 {
-		logger.Debug("No MCE releases found containing UI version %s - this may be a newer version not yet in any MCE release", uiVersion)
-		// Return a placeholder to show that we looked but didn't find it
-		return []models.UpcomingGA{
-			{
-				Product: "UI",
-				Version: fmt.Sprintf("%s not yet in released ACM/MCE versions", uiVersion),
-				GADate:  nil,
-			},
-		}
-	}
-
-	return matchingVersions
-}
 
 // checkUIVersionInMCERelease checks if a specific UI version exists in an MCE release.
 func (a *Analyzer) checkUIVersionInMCERelease(product, version string, gaDate *time.Time, targetUIVersion string) bool {
@@ -1006,7 +934,7 @@ func (a *Analyzer) filterRelevantBranches(branches []github.BranchInfo, prMerged
 	prYear := prMergedAt.Year()
 
 	for _, branch := range branches {
-		if a.isBranchRelevant(branch, prYear, *prMergedAt) {
+		if a.isBranchRelevant(branch, prYear) {
 			relevant = append(relevant, branch)
 		}
 	}
@@ -1015,7 +943,7 @@ func (a *Analyzer) filterRelevantBranches(branches []github.BranchInfo, prMerged
 }
 
 // isBranchRelevant determines if a branch is worth checking based on PR merge date
-func (a *Analyzer) isBranchRelevant(branch github.BranchInfo, prYear int, prMergedAt time.Time) bool {
+func (a *Analyzer) isBranchRelevant(branch github.BranchInfo, prYear int) bool {
 	// Always include current SaaS version branches (they're fast and important)
 	if branch.Pattern == "v" {
 		return true
@@ -1045,12 +973,19 @@ func (a *Analyzer) isBranchRelevant(branch github.BranchInfo, prYear int, prMerg
 		// Extract version from "release-ocm-2.15"
 		if strings.HasPrefix(branch.Name, "release-ocm-") {
 			versionStr := strings.TrimPrefix(branch.Name, "release-ocm-")
-			if dotIndex := strings.Index(versionStr, "."); dotIndex > 0 {
-				versionStr = versionStr[:dotIndex]
+			// Only trim patch versions (e.g. "2.15.3" -> "2.15"), but keep major.minor (e.g. "2.15")
+			// Count dots to determine if this is major.minor or major.minor.patch
+			dotCount := strings.Count(versionStr, ".")
+			if dotCount > 1 {
+				// This has patch version, trim to major.minor (e.g. "2.15.3" -> "2.15")
+				if secondDotIndex := strings.LastIndex(versionStr, "."); secondDotIndex > 0 {
+					versionStr = versionStr[:secondDotIndex]
+				}
 			}
+			// Parse as major.minor (e.g. "2.15" -> 2.15)
 			if version, err := strconv.ParseFloat(versionStr, 64); err == nil {
 				// Skip very old ACM versions for recent PRs
-				minVersion := 2.4 // Keep from ACM 2.4 onwards for recent PRs
+				minVersion := 2.0 // Keep from ACM 2.0 onwards for recent PRs (2.15, 2.14, 2.13, etc. are all current)
 				if prYear >= 2024 && version < minVersion {
 					return false
 				}
