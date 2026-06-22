@@ -967,6 +967,11 @@ func (a *Analyzer) isBranchRelevant(branch github.BranchInfo, prYear int) bool {
 	return true
 }
 
+// IsSheetsUnavailable returns true if Google Sheets data is not available.
+func (a *Analyzer) IsSheetsUnavailable() bool {
+	return a.gaParser == nil || !a.gaParser.IsAvailable()
+}
+
 // GetGitLabClient returns the GitLab client instance
 func (a *Analyzer) GetGitLabClient() *gitlab.Client {
 	return a.gitlabClient

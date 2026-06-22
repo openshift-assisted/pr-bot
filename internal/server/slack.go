@@ -547,8 +547,11 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL, userID string) (string, error
 	wg.Wait()
 	logger.Debug("Parallel PR analysis completed: %d merged, %d unmerged", len(relatedPRs), len(unmergedPRs))
 
-	// Format response for Slack
-	return s.formatJiraAnalysisForSlack(jiraAnalysis, relatedPRs, unmergedPRs, userID), nil
+	response := s.formatJiraAnalysisForSlack(jiraAnalysis, relatedPRs, unmergedPRs, userID)
+	if s.analyzer != nil && s.analyzer.IsSheetsUnavailable() {
+		response += "\n" + sheetsUnavailableSlackMessage()
+	}
+	return response, nil
 }
 
 // handleVersionCommand handles version comparison commands
