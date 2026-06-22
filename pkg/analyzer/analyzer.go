@@ -14,6 +14,7 @@ import (
 
 	"github.com/shay23bra/pr-bot/internal/ga"
 	"github.com/shay23bra/pr-bot/internal/github"
+	"github.com/shay23bra/pr-bot/internal/gitlocal"
 	"github.com/shay23bra/pr-bot/internal/gitlab"
 	"github.com/shay23bra/pr-bot/internal/jira"
 	"github.com/shay23bra/pr-bot/internal/logger"
@@ -29,19 +30,19 @@ const (
 // Analyzer handles PR analysis operations.
 type Analyzer struct {
 	githubClient *github.Client
+	repoManager  *gitlocal.RepoManager
 	config       *models.Config
 	gaParser     *ga.Parser
 	gitlabClient *gitlab.Client
 	jiraClient   *jira.Client
 
-	// Cache for branch information to avoid repeated API calls
 	branchCache    []github.BranchInfo
 	branchCacheMux sync.RWMutex
 }
 
 // New creates a new analyzer instance. Google Sheets is optional — if unavailable,
 // branch analysis still works but GA status will be skipped.
-func New(ctx context.Context, config *models.Config) (*Analyzer, error) {
+func New(ctx context.Context, config *models.Config, repoManager *gitlocal.RepoManager) (*Analyzer, error) {
 	githubClient := github.NewClient(ctx, config.GitHubToken)
 
 	var gaParser *ga.Parser
@@ -67,6 +68,7 @@ func New(ctx context.Context, config *models.Config) (*Analyzer, error) {
 
 	return &Analyzer{
 		githubClient: githubClient,
+		repoManager:  repoManager,
 		config:       config,
 		gaParser:     gaParser,
 		gitlabClient: gitlabClient,
@@ -92,8 +94,13 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 	logger.Debug("PR #%d: %s (merged at %v)", prInfo.Number, prInfo.Title, prInfo.MergedAt)
 	logger.Debug("Commit hash: %s", prInfo.Hash)
 
-	// Get all release branches with different patterns (using cache)
-	branchInfos, err := a.getBranches()
+	// Get repo and branch info via local git
+	repo, err := a.repoManager.EnsureRepo(a.config.Owner, a.config.Repository, a.config.GitHubToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure local repo: %w", err)
+	}
+
+	branchInfos, err := a.getBranches(repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get release branches: %w", err)
 	}
@@ -136,16 +143,14 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 
 			logger.Debug("Checking branch: %s (%s)", branch.Name, branch.Pattern)
 
-			found, mergedAt, err := a.githubClient.CheckCommitInBranch(
-				a.config.Owner,
-				a.config.Repository,
-				prInfo.Hash,
-				branch.Name,
-			)
-
+			found, err := repo.IsAncestor(prInfo.Hash, branch.Name)
 			if err != nil {
 				logger.Debug("Warning: failed to check commit in branch %s: %v", branch.Name, err)
-				// Continue with other branches even if one fails
+			}
+
+			var mergedAt *time.Time
+			if found {
+				mergedAt, _ = repo.GetCommitDate(prInfo.Hash)
 			}
 
 			gaStatus := models.GAStatus{}
@@ -177,12 +182,7 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 				// For Version-prefixed branches (v*) and UI release branches (releases/v*), find the exact release versions
 				if branch.Pattern == "v" || (branch.Pattern == "releases/v" && a.config.Repository != "assisted-installer-ui") {
 					logger.Debug("Finding exact release versions for %s (%s)", branch.Name, branch.Version)
-					foundTags, tagErr := a.githubClient.FindCommitInVersionTags(
-						a.config.Owner,
-						a.config.Repository,
-						prInfo.Hash,
-						branch.Name, // e.g., "v2.40" for branch v2.40 or "releases/v2.15-cim" for releases/v branch
-					)
+					foundTags, tagErr := repo.FindCommitInVersionTags(prInfo.Hash, branch.Name)
 					if tagErr != nil {
 						logger.Debug("Warning: failed to find release versions for %s: %v", branch.Name, tagErr)
 					} else {
@@ -264,9 +264,8 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 	return result, nil
 }
 
-// getBranches returns cached branch information or fetches it if not cached
-func (a *Analyzer) getBranches() ([]github.BranchInfo, error) {
-	// Check cache first (read lock)
+// getBranches returns branch information from local git repo
+func (a *Analyzer) getBranches(repo *gitlocal.Repo) ([]github.BranchInfo, error) {
 	a.branchCacheMux.RLock()
 	if len(a.branchCache) > 0 {
 		cached := make([]github.BranchInfo, len(a.branchCache))
@@ -277,30 +276,25 @@ func (a *Analyzer) getBranches() ([]github.BranchInfo, error) {
 	}
 	a.branchCacheMux.RUnlock()
 
-	// Not cached, fetch and cache (write lock)
 	a.branchCacheMux.Lock()
 	defer a.branchCacheMux.Unlock()
 
-	// Double-check cache in case another goroutine populated it
 	if len(a.branchCache) > 0 {
 		cached := make([]github.BranchInfo, len(a.branchCache))
 		copy(cached, a.branchCache)
-		logger.Debug("Using newly cached branch information (%d branches)", len(cached))
 		return cached, nil
 	}
 
-	// Fetch branches from GitHub API
-	logger.Debug("Fetching branch information from GitHub API")
-	branchInfos, err := a.githubClient.GetAllReleaseBranches(a.config.Owner, a.config.Repository)
+	logger.Debug("Listing branches from local git repo")
+	branchInfos, err := repo.ListBranches()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get release branches: %w", err)
+		return nil, fmt.Errorf("failed to list branches: %w", err)
 	}
 
-	// Cache the results
 	a.branchCache = make([]github.BranchInfo, len(branchInfos))
 	copy(a.branchCache, branchInfos)
 
-	logger.Debug("Cached %d release branches", len(branchInfos))
+	logger.Debug("Found %d release branches (local)", len(branchInfos))
 	return branchInfos, nil
 }
 
@@ -361,7 +355,13 @@ func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRI
 			}
 
 			// Get branch presence for this related PR
-			branchInfos, err := a.getBranches()
+			relatedRepo, repoErr := a.repoManager.EnsureRepo(a.config.Owner, a.config.Repository, a.config.GitHubToken)
+			if repoErr != nil {
+				logger.Debug("Failed to get local repo for related PR #%d: %v", prNumber, repoErr)
+				continue
+			}
+
+			branchInfos, err := a.getBranches(relatedRepo)
 			if err != nil {
 				logger.Debug("Failed to get release branches for related PR #%d: %v", prNumber, err)
 				continue
@@ -369,9 +369,13 @@ func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRI
 
 			var branchPresences []models.BranchPresence
 			for _, branchInfo := range branchInfos {
-				found, mergedAt, err := a.githubClient.CheckCommitInBranch(a.config.Owner, a.config.Repository, relatedPRInfo.Hash, branchInfo.Name)
+				found, err := relatedRepo.IsAncestor(relatedPRInfo.Hash, branchInfo.Name)
 				if err != nil {
 					continue
+				}
+				var mergedAt *time.Time
+				if found {
+					mergedAt, _ = relatedRepo.GetCommitDate(relatedPRInfo.Hash)
 				}
 
 				// Get release information for ACM/MCE branches
@@ -397,16 +401,10 @@ func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRI
 				}
 
 				if found {
-					// For Version-prefixed branches (v*) and UI release branches (releases/v*), find the exact release versions
 					if branchInfo.Pattern == "v" || (branchInfo.Pattern == "releases/v" && a.config.Repository != "assisted-installer-ui") {
-						foundTags, err := a.githubClient.FindCommitInVersionTags(
-							a.config.Owner,
-							a.config.Repository,
-							relatedPRInfo.Hash,
-							branchInfo.Name,
-						)
-						if err != nil {
-							logger.Debug("Warning: failed to find release versions for related PR #%d: %v", prNumber, err)
+						foundTags, tagErr := relatedRepo.FindCommitInVersionTags(relatedPRInfo.Hash, branchInfo.Name)
+						if tagErr != nil {
+							logger.Debug("Warning: failed to find release versions for related PR #%d: %v", prNumber, tagErr)
 						} else {
 							releasedVersions = foundTags
 						}
@@ -978,7 +976,12 @@ func (a *Analyzer) GetGitLabClient() *gitlab.Client {
 func (a *Analyzer) CompareVersions(component, version string) (*models.VersionComparisonResult, error) {
 	owner, repo := getRepositoryForComponent(component)
 
-	exists, err := a.githubClient.TagExists(owner, repo, version)
+	localRepo, err := a.repoManager.EnsureRepo(owner, repo, a.config.GitHubToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure local repo: %w", err)
+	}
+
+	exists, err := localRepo.TagExists(version)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check tag: %w", err)
 	}
@@ -986,39 +989,24 @@ func (a *Analyzer) CompareVersions(component, version string) (*models.VersionCo
 		return nil, fmt.Errorf("no release found with tag '%s' in %s/%s", version, owner, repo)
 	}
 
-	previousVersion, err := a.githubClient.FindPreviousVersion(owner, repo, version)
+	previousVersion, err := localRepo.FindPreviousVersion(version)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find previous version: %w", err)
 	}
 
-	commits, err := a.githubClient.GetCommitsBetweenTags(owner, repo, previousVersion, version)
+	commits, err := localRepo.LogBetween(previousVersion, version)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get commits: %w", err)
 	}
 
-	result := &models.VersionComparisonResult{
+	return &models.VersionComparisonResult{
 		Component:       component,
 		Owner:           owner,
 		Repository:      repo,
 		TargetVersion:   version,
 		PreviousVersion: previousVersion,
-	}
-
-	for i := len(commits) - 1; i >= 0; i-- {
-		c := commits[i]
-		hash := c.GetSHA()
-		if len(hash) > 8 {
-			hash = hash[:8]
-		}
-		date := "Unknown date"
-		if c.Commit != nil && c.Commit.Committer != nil && c.Commit.Committer.Date != nil {
-			date = c.Commit.Committer.Date.GetTime().Format("2006-01-02 15:04:05")
-		}
-		title := strings.Split(c.GetCommit().GetMessage(), "\n")[0]
-		result.Commits = append(result.Commits, models.CommitInfo{ShortHash: hash, Date: date, Title: title})
-	}
-
-	return result, nil
+		Commits:         commits,
+	}, nil
 }
 
 func getRepositoryForComponent(component string) (string, string) {

@@ -81,6 +81,7 @@ func Load() (*models.Config, error) {
 		JiraEmail:                jiraEmail,
 		GoogleSheetID:            googleSheetID,
 		GoogleServiceAccountJSON: googleServiceAccountJSON,
+		RepoCacheDir:             viper.GetString("repo_cache_dir"),
 	}
 
 	// Validate required fields
@@ -122,6 +123,7 @@ func setDefaults() {
 	viper.SetDefault("jira_email", "")
 	viper.SetDefault("google_sheet_id", "")
 	viper.SetDefault("google_service_account_json", "")
+	viper.SetDefault("repo_cache_dir", "")
 }
 
 // validateConfig validates the configuration.

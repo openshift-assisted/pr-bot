@@ -140,6 +140,7 @@ type Config struct {
 	JiraEmail                string `json:"jira_email"`
 	GoogleSheetID            string `json:"google_sheet_id"`
 	GoogleServiceAccountJSON string `json:"google_service_account_json"`
+	RepoCacheDir             string `json:"repo_cache_dir"`
 }
 
 // PatternDescription returns a human-readable description for branch patterns.

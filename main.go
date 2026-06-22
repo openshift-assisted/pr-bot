@@ -16,6 +16,7 @@ import (
 	"github.com/shay23bra/pr-bot/internal/config"
 	"github.com/shay23bra/pr-bot/internal/ga"
 	"github.com/shay23bra/pr-bot/internal/github"
+	"github.com/shay23bra/pr-bot/internal/gitlocal"
 	"github.com/shay23bra/pr-bot/internal/gitlab"
 	"github.com/shay23bra/pr-bot/internal/jira"
 	"github.com/shay23bra/pr-bot/internal/logger"
@@ -339,56 +340,40 @@ func handleVersionComparison(component, version string) {
 	fmt.Printf("Target version: %s\n", version)
 	fmt.Printf("Component: %s\n", component)
 
-	// Get repository information for the component
 	owner, repo := getRepositoryForComponent(component)
 	fmt.Printf("Repository: %s/%s\n", owner, repo)
 
-	// Load configuration for GitHub token
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Create GitHub client
-	ctx := context.Background()
-	githubClient := github.NewClient(ctx, cfg.GitHubToken)
+	rm := createRepoManager(cfg)
+	localRepo, err := rm.EnsureRepo(owner, repo, cfg.GitHubToken)
+	if err != nil {
+		log.Fatalf("Failed to ensure local repo: %v", err)
+	}
 
-	// First, check if the target version tag exists
 	fmt.Printf("Checking if %s tag exists...\n", version)
-	exists, err := githubClient.TagExists(owner, repo, version)
+	exists, err := localRepo.TagExists(version)
 	if err != nil {
 		log.Fatalf("Failed to check if tag exists: %v", err)
 	}
-
 	if !exists {
 		fmt.Printf("❌ Error: No release found with tag '%s'\n", version)
-		fmt.Printf("Repository: %s/%s\n", owner, repo)
 		return
 	}
-
 	fmt.Printf("✅ Tag %s exists\n", version)
 
-	// Find previous version
 	fmt.Printf("Finding nearest previous version...\n")
-	previousVersion, err := githubClient.FindPreviousVersion(owner, repo, version)
+	previousVersion, err := localRepo.FindPreviousVersion(version)
 	if err != nil {
 		log.Fatalf("Failed to find previous version: %v", err)
 	}
-
 	fmt.Printf("Previous version found: %s\n", previousVersion)
-
-	// Provide context about the comparison
-	major, minor, patch, _ := parseVersionForDisplay(version)
-	prevMajor, prevMinor, prevPatch, _ := parseVersionForDisplay(previousVersion)
-
-	if major == prevMajor && minor == prevMinor && patch > 0 && prevPatch < patch-1 {
-		fmt.Printf("Note: Comparing with nearest available patch (v%d.%d.%d not found)\n", major, minor, patch-1)
-	}
-
 	fmt.Printf("Comparing %s...%s\n\n", previousVersion, version)
 
-	// Get commits between versions
-	commits, err := githubClient.GetCommitsBetweenTags(owner, repo, previousVersion, version)
+	commits, err := localRepo.LogBetween(previousVersion, version)
 	if err != nil {
 		log.Fatalf("Failed to get commits between versions: %v", err)
 	}
@@ -396,56 +381,13 @@ func handleVersionComparison(component, version string) {
 	fmt.Printf("=== Changes in %s ===\n", version)
 	fmt.Printf("Total commits: %d\n\n", len(commits))
 
-	if len(commits) == 0 {
-		fmt.Printf("No commits found between %s and %s\n", previousVersion, version)
-		return
+	for _, c := range commits {
+		fmt.Printf("  %s  %s  %s\n", c.ShortHash, c.Date, c.Title)
 	}
 
-	// Display commits in reverse order (oldest first)
-	for i := len(commits) - 1; i >= 0; i-- {
-		commit := commits[i]
-		hash := commit.GetSHA()
-		shortHash := hash
-		if len(hash) > 8 {
-			shortHash = hash[:8]
-		}
-
-		message := commit.GetCommit().GetMessage()
-		title := strings.Split(message, "\n")[0] // Get first line as title
-
-		var date string
-		if commit.Commit != nil && commit.Commit.Committer != nil && commit.Commit.Committer.Date != nil {
-			date = commit.Commit.Committer.Date.GetTime().Format("2006-01-02 15:04:05")
-		} else {
-			date = "Unknown date"
-		}
-
-		fmt.Printf("  %s  %s  %s\n", shortHash, date, title)
-	}
-
-	fmt.Printf("\nRepository: %s/%s\n", cfg.Owner, cfg.Repository)
+	fmt.Printf("\nRepository: %s/%s\n", owner, repo)
 }
 
-// parseVersionForDisplay parses a version string for display purposes (similar to parseVersion but returns 0 on error)
-func parseVersionForDisplay(version string) (major, minor, patch int, err error) {
-	// Remove 'v' prefix if present
-	version = strings.TrimPrefix(version, "v")
-
-	// Split by dots
-	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
-		return 0, 0, 0, fmt.Errorf("invalid version format")
-	}
-
-	major, _ = strconv.Atoi(parts[0])
-	minor, _ = strconv.Atoi(parts[1])
-
-	if len(parts) >= 3 {
-		patch, _ = strconv.Atoi(parts[2])
-	}
-
-	return major, minor, patch, nil
-}
 
 // handleMCEVersionComparison compares an MCE version with its previous release using GitLab snapshots
 func handleMCEVersionComparison(component, version string) {
@@ -459,11 +401,10 @@ func handleMCEVersionComparison(component, version string) {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Create GitHub client for commit comparison
 	ctx := context.Background()
 	githubClient := github.NewClient(ctx, cfg.GitHubToken)
+	rm := createRepoManager(cfg)
 
-	// Create GitLab client
 	gitlabClient := gitlab.NewClient(ctx, cfg.GitLabToken, githubClient)
 	if gitlabClient == nil {
 		log.Fatalf("Failed to create GitLab client. Please set PR_BOT_GITLAB_TOKEN environment variable.")
@@ -509,8 +450,13 @@ func handleMCEVersionComparison(component, version string) {
 
 	fmt.Printf("\nComparing %s...%s\n\n", previousSHA[:8], targetSHA[:8])
 
-	// Get commits between SHAs from GitHub
-	commits, err := githubClient.GetCommitsBetweenSHAs(cfg.Owner, cfg.Repository, previousSHA, targetSHA)
+	owner, repo := getRepositoryForComponent(component)
+	localRepo, err := rm.EnsureRepo(owner, repo, cfg.GitHubToken)
+	if err != nil {
+		log.Fatalf("Failed to ensure local repo: %v", err)
+	}
+
+	commits, err := localRepo.LogBetween(previousSHA, targetSHA)
 	if err != nil {
 		log.Fatalf("Failed to get commits between SHAs: %v", err)
 	}
@@ -523,29 +469,11 @@ func handleMCEVersionComparison(component, version string) {
 		return
 	}
 
-	// Display commits in reverse order (oldest first)
-	for i := len(commits) - 1; i >= 0; i-- {
-		commit := commits[i]
-		hash := commit.GetSHA()
-		shortHash := hash
-		if len(hash) > 8 {
-			shortHash = hash[:8]
-		}
-
-		message := commit.GetCommit().GetMessage()
-		title := strings.Split(message, "\n")[0] // Get first line as title
-
-		var date string
-		if commit.Commit != nil && commit.Commit.Committer != nil && commit.Commit.Committer.Date != nil {
-			date = commit.Commit.Committer.Date.GetTime().Format("2006-01-02 15:04:05")
-		} else {
-			date = "Unknown date"
-		}
-
-		fmt.Printf("  %s  %s  %s\n", shortHash, date, title)
+	for _, c := range commits {
+		fmt.Printf("  %s  %s  %s\n", c.ShortHash, c.Date, c.Title)
 	}
 
-	fmt.Printf("\nRepository: %s/%s\n", cfg.Owner, cfg.Repository)
+	fmt.Printf("\nRepository: %s/%s\n", owner, repo)
 }
 
 // findPreviousMCEVersion finds the previous MCE version using GitLab snapshot data
@@ -770,6 +698,17 @@ func handleSlackTest() {
 	fmt.Printf("Feature needs to be migrated from old code!\n")
 }
 
+func createRepoManager(cfg *models.Config) *gitlocal.RepoManager {
+	if cfg.RepoCacheDir == "" {
+		log.Fatalf("PR_BOT_REPO_CACHE_DIR is required. Set it to a directory for caching git repos.")
+	}
+	rm, err := gitlocal.NewRepoManager(cfg.RepoCacheDir)
+	if err != nil {
+		log.Fatalf("Failed to create repo manager: %v", err)
+	}
+	return rm
+}
+
 // handlePRAnalysis analyzes a PR (existing functionality)
 func handlePRAnalysis(prURL string) {
 	// Load configuration
@@ -790,9 +729,9 @@ func handlePRAnalysis(prURL string) {
 		cfg.Repository = repo
 	}
 
-	// Create analyzer and run analysis
 	ctx := context.Background()
-	a, err := analyzer.New(ctx, cfg)
+	rm := createRepoManager(cfg)
+	a, err := analyzer.New(ctx, cfg, rm)
 	if err != nil {
 		log.Fatalf("Failed to create analyzer: %v", err)
 	}
@@ -829,8 +768,8 @@ func handleJiraTicketAnalysis(jiraInput string) {
 		log.Fatalf("JIRA token not configured. Please set PR_BOT_JIRA_TOKEN in your .env file")
 	}
 
-	// Create clients
 	ctx := context.Background()
+	rm := createRepoManager(cfg)
 
 	// Create JIRA client for ticket discovery
 	jiraClient := jira.NewClient(ctx, cfg.JiraEmail, cfg.JiraToken)
@@ -927,8 +866,7 @@ func handleJiraTicketAnalysis(jiraInput string) {
 				prCfg.Repository = repo
 			}
 
-			// Create analyzer for this specific repository
-			prAnalyzer, err := analyzer.New(ctx, &prCfg)
+			prAnalyzer, err := analyzer.New(ctx, &prCfg, rm)
 			if err != nil {
 				fmt.Printf("Error creating analyzer for PR #%d: %v\n", prNumber, err)
 				return
@@ -1155,8 +1093,11 @@ func startSlackServer(port int) {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Create and start Slack server
-	slackServer, err := server.NewSlackServer(cfg)
+	rm := createRepoManager(cfg)
+	fmt.Printf("📦 Pre-cloning supported repositories...\n")
+	rm.CloneAllSupported(cfg.GitHubToken)
+
+	slackServer, err := server.NewSlackServer(cfg, rm)
 	if err != nil {
 		log.Fatalf("Failed to create Slack server: %v", err)
 	}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/shay23bra/pr-bot/internal/ga"
 	"github.com/shay23bra/pr-bot/internal/github"
+	"github.com/shay23bra/pr-bot/internal/gitlocal"
 	"github.com/shay23bra/pr-bot/internal/jira"
 	"github.com/shay23bra/pr-bot/internal/logger"
 	"github.com/shay23bra/pr-bot/internal/models"
@@ -31,16 +32,17 @@ import (
 
 // SlackServer handles Slack bot requests
 type SlackServer struct {
-	config    *models.Config
-	analyzer  *analyzer.Analyzer
-	botClient *slack.BotClient
-	botUserID string
+	config      *models.Config
+	analyzer    *analyzer.Analyzer
+	repoManager *gitlocal.RepoManager
+	botClient   *slack.BotClient
+	botUserID   string
 }
 
 // NewSlackServer creates a new Slack server instance
-func NewSlackServer(cfg *models.Config) (*SlackServer, error) {
+func NewSlackServer(cfg *models.Config, repoManager *gitlocal.RepoManager) (*SlackServer, error) {
 	ctx := context.Background()
-	a, err := analyzer.New(ctx, cfg)
+	a, err := analyzer.New(ctx, cfg, repoManager)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create analyzer: %w", err)
 	}
@@ -54,9 +56,10 @@ func NewSlackServer(cfg *models.Config) (*SlackServer, error) {
 	}
 
 	return &SlackServer{
-		config:    cfg,
-		analyzer:  a,
-		botClient: botClient,
+		config:      cfg,
+		repoManager: repoManager,
+		analyzer:    a,
+		botClient:   botClient,
 	}, nil
 }
 
@@ -228,7 +231,7 @@ func (s *SlackServer) analyzePR(prURL, userID string) (string, error) {
 		cfg.Repository = repo
 	}
 	ctx := context.Background()
-	a, err := analyzer.New(ctx, &cfg)
+	a, err := analyzer.New(ctx, &cfg, s.repoManager)
 	if err != nil {
 		return "", fmt.Errorf("failed to create analyzer: %w", err)
 	}
@@ -401,7 +404,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL, userID string) (string, error
 		cfg := *s.config
 		cfg.Owner = owner
 		cfg.Repository = repo
-		a, err := analyzer.New(ctx, &cfg)
+		a, err := analyzer.New(ctx, &cfg, s.repoManager)
 		if err != nil {
 			return nil, err
 		}
@@ -572,7 +575,7 @@ func (s *SlackServer) handleVersionCommand(text string) (string, error) {
 func (s *SlackServer) compareVersionWithComponent(component, version string) (string, error) {
 	ctx := context.Background()
 	cfg := *s.config
-	a, err := analyzer.New(ctx, &cfg)
+	a, err := analyzer.New(ctx, &cfg, s.repoManager)
 	if err != nil {
 		return "", fmt.Errorf("failed to create analyzer: %w", err)
 	}

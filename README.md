@@ -200,11 +200,13 @@ gh release create v0.X.X --title "vX.X.X - Release Title" --notes "Release notes
 ### Prerequisites
 
 - Go 1.21 or later (if building from source)
-- **GitHub token (REQUIRED)** - For API access
+- **Git** - For local repository cloning (branch/tag checks are done locally, not via API)
+- **GitHub token (REQUIRED)** - For PR info lookups and repo cloning
 - **GitLab token (REQUIRED)** - For SaaS version badges and MCE validation  
-- **JIRA token (REQUIRED)** - For JIRA ticket analysis
+- **JIRA token + email (REQUIRED)** - For JIRA ticket analysis (Atlassian Cloud)
 - **Red Hat VPN connection (REQUIRED)** - For accessing internal GitLab and JIRA APIs
 - **Google Sheets API access (REQUIRED)** - For GA release schedule data
+- **Repo cache directory (REQUIRED)** - Set `PR_BOT_REPO_CACHE_DIR` for local git clones (~500MB)
 
 ### GitHub Token Setup
 
@@ -375,6 +377,9 @@ PR_BOT_JIRA_EMAIL=your-email@redhat.com
 # Google Sheets Configuration (Required - service account for private sheets)
 PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project", "private_key_id": "...", "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n", "client_email": "your-service-account@project-id.iam.gserviceaccount.com", "client_id": "...", "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}'
 PR_BOT_GOOGLE_SHEET_ID=your-private-google-sheet-id-here
+
+# Local Git Cache (Required - for fast branch/tag operations without API rate limits)
+PR_BOT_REPO_CACHE_DIR=/path/to/repo-cache
 ```
 
 ### Optional: Build Binary
@@ -410,6 +415,9 @@ export PR_BOT_GITLAB_TOKEN="your-gitlab-token-here"
 # JIRA Configuration (Required for JIRA ticket analysis)
 export PR_BOT_JIRA_TOKEN="your-jira-api-token-here"
 export PR_BOT_JIRA_EMAIL="your-email@redhat.com"
+
+# Local Git Cache (Required - repos are cloned locally for fast analysis)
+export PR_BOT_REPO_CACHE_DIR="/path/to/repo-cache"
 ```
 
 ### Config File
