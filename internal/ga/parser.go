@@ -35,6 +35,16 @@ const cacheTTL = 1 * time.Hour
 
 const ReleaseScheduleURL = "https://docs.google.com/spreadsheets/d/1kf0rj7J3DkP-Ddd-Ixy1F79b9U69_Wniob-ewH_H4l4/edit?gid=2089594794#gid=2089594794"
 
+// IsAvailable returns true if Google Sheets data was successfully loaded.
+func (p *Parser) IsAvailable() bool {
+	select {
+	case <-p.parseChannel:
+		return p.parseError == nil && p.cache != nil
+	default:
+		return false
+	}
+}
+
 // SheetsUnavailableMessage returns a user-friendly message when Google Sheets data is unavailable.
 func SheetsUnavailableMessage() string {
 	return fmt.Sprintf("⚠️  Release schedule data is currently unavailable (Google Sheets API error).\n   View the release schedule directly: %s", ReleaseScheduleURL)

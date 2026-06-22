@@ -150,19 +150,20 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 			var upcomingGAs []models.UpcomingGA
 			var releasedVersions []string
 
-			// Always calculate GA status for ACM/MCE branches to provide context
-			if branch.Pattern == "release-ocm-" {
+			if branch.Pattern == "release-ocm-" && !sheetsUnavailable.Load() {
 				var gaErr error
 				gaStatus, gaErr = a.gaParser.GetGAStatus(branch.Name, mergedAt)
 				if gaErr != nil {
-					logger.Debug("Warning: failed to get GA status for %s: %v", branch.Name, gaErr)
-					sheetsUnavailable.Store(true)
-				}
-
-				upcomingGAs, gaErr = a.gaParser.GetUpcomingGAVersions(branch.Name, mergedAt)
-				if gaErr != nil {
-					logger.Debug("Warning: failed to get upcoming GA versions for %s: %v", branch.Name, gaErr)
-					sheetsUnavailable.Store(true)
+					if sheetsUnavailable.CompareAndSwap(false, true) {
+						logger.Debug("Google Sheets unavailable, skipping GA status for all branches: %v", gaErr)
+					}
+				} else {
+					upcomingGAs, gaErr = a.gaParser.GetUpcomingGAVersions(branch.Name, mergedAt)
+					if gaErr != nil {
+						if sheetsUnavailable.CompareAndSwap(false, true) {
+							logger.Debug("Google Sheets unavailable, skipping upcoming GA for all branches: %v", gaErr)
+						}
+					}
 				}
 			} else if branch.Pattern == "releases/v" && a.config.Repository == "assisted-installer-ui" {
 				// TEMPORARILY DISABLED: For UI release branches, find the corresponding ACM/MCE versions
@@ -376,18 +377,16 @@ func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRI
 				gaStatus := models.GAStatus{}
 				var upcomingGAs []models.UpcomingGA
 
-				// Always calculate GA status for ACM/MCE branches to provide context
-				if branchInfo.Pattern == "release-ocm-" {
+				if branchInfo.Pattern == "release-ocm-" && a.gaParser.IsAvailable() {
 					var gaErr error
 					gaStatus, gaErr = a.gaParser.GetGAStatus(branchInfo.Name, mergedAt)
 					if gaErr != nil {
 						logger.Debug("Warning: failed to get GA status for related PR #%d: %v", prNumber, gaErr)
-					}
-
-					// Get upcoming GA versions
-					upcomingGAs, gaErr = a.gaParser.GetUpcomingGAVersions(branchInfo.Name, mergedAt)
-					if gaErr != nil {
-						logger.Debug("Warning: failed to get upcoming GA versions for related PR #%d: %v", prNumber, gaErr)
+					} else {
+						upcomingGAs, gaErr = a.gaParser.GetUpcomingGAVersions(branchInfo.Name, mergedAt)
+						if gaErr != nil {
+							logger.Debug("Warning: failed to get upcoming GA versions for related PR #%d: %v", prNumber, gaErr)
+						}
 					}
 				} else if branchInfo.Pattern == "releases/v" && a.config.Repository == "assisted-installer-ui" {
 					// TEMPORARILY DISABLED: For UI release branches, find the corresponding ACM/MCE versions
