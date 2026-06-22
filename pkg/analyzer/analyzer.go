@@ -39,19 +39,21 @@ type Analyzer struct {
 	branchCacheMux sync.RWMutex
 }
 
-// New creates a new analyzer instance.
+// New creates a new analyzer instance. Google Sheets is optional — if unavailable,
+// branch analysis still works but GA status will be skipped.
 func New(ctx context.Context, config *models.Config) (*Analyzer, error) {
-	if config.GoogleServiceAccountJSON == "" || config.GoogleSheetID == "" {
-		return nil, fmt.Errorf("Google Sheets configuration missing (PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON and PR_BOT_GOOGLE_SHEET_ID required)")
-	}
-
 	githubClient := github.NewClient(ctx, config.GitHubToken)
 
-	gaParser, err := ga.NewParser(config.GoogleServiceAccountJSON, config.GoogleSheetID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Google Sheets parser: %w", err)
+	var gaParser *ga.Parser
+	if config.GoogleServiceAccountJSON != "" && config.GoogleSheetID != "" {
+		var err error
+		gaParser, err = ga.NewParser(config.GoogleServiceAccountJSON, config.GoogleSheetID)
+		if err != nil {
+			logger.Debug("Google Sheets unavailable (GA status will be skipped): %v", err)
+		} else {
+			logger.Debug("Using Google Sheets for GA data (Sheet ID: %s)", config.GoogleSheetID)
+		}
 	}
-	logger.Debug("Using Google Sheets for GA data (Sheet ID: %s)", config.GoogleSheetID)
 
 	var gitlabClient *gitlab.Client
 	if config.GitLabToken != "" {
@@ -150,7 +152,7 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 			var upcomingGAs []models.UpcomingGA
 			var releasedVersions []string
 
-			if branch.Pattern == "release-ocm-" && !sheetsUnavailable.Load() {
+			if branch.Pattern == "release-ocm-" && a.gaParser != nil && !sheetsUnavailable.Load() {
 				var gaErr error
 				gaStatus, gaErr = a.gaParser.GetGAStatus(branch.Name, mergedAt)
 				if gaErr != nil {
@@ -244,7 +246,7 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 		PR:                *prInfo,
 		ReleaseBranches:   branchPresences,
 		AnalyzedAt:        time.Now(),
-		SheetsUnavailable: sheetsUnavailable.Load(),
+		SheetsUnavailable: sheetsUnavailable.Load() || a.gaParser == nil,
 	}
 
 	// Perform JIRA analysis if JIRA client is available and PR title contains any JIRA ticket
@@ -377,7 +379,7 @@ func (a *Analyzer) performJiraAnalysis(mainTicket string, originalPR *models.PRI
 				gaStatus := models.GAStatus{}
 				var upcomingGAs []models.UpcomingGA
 
-				if branchInfo.Pattern == "release-ocm-" && a.gaParser.IsAvailable() {
+				if branchInfo.Pattern == "release-ocm-" && a.gaParser != nil && a.gaParser.IsAvailable() {
 					var gaErr error
 					gaStatus, gaErr = a.gaParser.GetGAStatus(branchInfo.Name, mergedAt)
 					if gaErr != nil {

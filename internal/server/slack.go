@@ -388,15 +388,34 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL, userID string) (string, error
 		AnalysisSuccess: true,
 	}
 
-	// Analyze each related PR (both merged and unmerged) in parallel
+	// Pre-create one analyzer per unique repo to share branch cache and reduce API calls
+	analyzerCache := make(map[string]*analyzer.Analyzer)
+	var analyzerMu sync.Mutex
+	getAnalyzer := func(owner, repo string) (*analyzer.Analyzer, error) {
+		key := owner + "/" + repo
+		analyzerMu.Lock()
+		defer analyzerMu.Unlock()
+		if a, ok := analyzerCache[key]; ok {
+			return a, nil
+		}
+		cfg := *s.config
+		cfg.Owner = owner
+		cfg.Repository = repo
+		a, err := analyzer.New(ctx, &cfg)
+		if err != nil {
+			return nil, err
+		}
+		analyzerCache[key] = a
+		return a, nil
+	}
+
 	var relatedPRs []models.RelatedPR
 	var unmergedPRs []models.UnmergedPR
-	var mu sync.Mutex // Protect shared slices
+	var mu sync.Mutex
 
 	logger.Debug("Starting parallel analysis of %d unique PR URLs", len(uniquePRURLs))
 
-	// Create worker pool for parallel processing
-	const maxWorkers = 3 // Limit to avoid GitHub API rate limiting
+	const maxWorkers = 3
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
 
@@ -405,48 +424,23 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL, userID string) (string, error
 		go func(index int, url string) {
 			defer wg.Done()
 
-			// Acquire semaphore
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			logger.Debug("Processing PR %d/%d: %s", index+1, len(uniquePRURLs), url)
 
-			// Parse PR URL to get number, owner, repo
 			prNumber, owner, repo, err := github.ParsePRInput(url)
 			if err != nil {
 				logger.Debug("Failed to parse PR URL %s: %v", url, err)
 				return
 			}
 
-			// Create config copy for this worker (avoid config races)
-			workerConfig := *s.config
-			workerConfig.Owner = owner
-			workerConfig.Repository = repo
-
-			// Create analyzer for this specific repository
-			a, aErr := analyzer.New(ctx, &workerConfig)
+			a, aErr := getAnalyzer(owner, repo)
 			if aErr != nil {
-				logger.Debug("Failed to create analyzer for PR %d: %v, checking if it's unmerged", prNumber, aErr)
-				githubClient := github.NewClient(ctx, workerConfig.GitHubToken)
-				prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
-				if prErr != nil {
-					logger.Debug("Failed to get basic info for PR %d: %v", prNumber, prErr)
-				} else if prInfo.MergedAt == nil {
-					unmergedPR := models.UnmergedPR{
-						Number: prInfo.Number,
-						Title:  prInfo.Title,
-						URL:    prInfo.URL,
-						Status: "In Review",
-					}
-					mu.Lock()
-					unmergedPRs = append(unmergedPRs, unmergedPR)
-					mu.Unlock()
-					logger.Debug("Added unmerged PR #%d to results (analyzer creation failed): %s", prNumber, prInfo.Title)
-				}
+				logger.Debug("Failed to create analyzer for PR %d: %v", prNumber, aErr)
 				return
 			}
 
-			// Try to analyze the PR
 			result, err := a.AnalyzePR(prNumber)
 			if err != nil {
 				logger.Debug("PR %d analysis failed with error: %s", prNumber, err.Error())
@@ -454,7 +448,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL, userID string) (string, error
 				if strings.Contains(err.Error(), "is not merged") || strings.Contains(err.Error(), "not merged") {
 					logger.Debug("Detected unmerged PR %d, getting basic info", prNumber)
 					// Get basic PR info for unmerged PR
-					githubClient := github.NewClient(ctx, workerConfig.GitHubToken)
+					githubClient := github.NewClient(ctx, s.config.GitHubToken)
 					prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
 					if prErr != nil {
 						logger.Debug("Failed to get basic info for unmerged PR %d: %v", prNumber, prErr)
@@ -484,7 +478,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL, userID string) (string, error
 				} else {
 					logger.Debug("Failed to analyze PR %d (not unmerged), getting basic info", prNumber)
 					// For other analysis failures, still try to get basic PR info
-					githubClient := github.NewClient(ctx, workerConfig.GitHubToken)
+					githubClient := github.NewClient(ctx, s.config.GitHubToken)
 					prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
 					if prErr != nil {
 						logger.Debug("Failed to get basic info for PR %d: %v", prNumber, prErr)
