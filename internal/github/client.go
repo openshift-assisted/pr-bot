@@ -4,6 +4,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -269,15 +270,10 @@ func findEarliestVersion(tags []string) string {
 	if len(tags) == 0 {
 		return ""
 	}
-	if len(tags) == 1 {
-		return tags[0]
-	}
 
-	// Simple string comparison works for semantic versions like v2.40.0, v2.40.1
-	// since Go's string comparison will sort them correctly
 	earliest := tags[0]
 	for _, tag := range tags[1:] {
-		if tag < earliest {
+		if models.CompareSemanticVersions(tag, earliest) < 0 {
 			earliest = tag
 		}
 	}
@@ -569,6 +565,41 @@ func (c *Client) GetAllReleaseBranches(owner, repo string) ([]BranchInfo, error)
 // GetCommit gets commit information by SHA.
 func (c *Client) GetCommit(owner, repo, sha string) (*github.RepositoryCommit, *github.Response, error) {
 	return c.client.Repositories.GetCommit(c.ctx, owner, repo, sha, nil)
+}
+
+// ParsePRInput parses PR input which can be either a number or a GitHub URL.
+// Returns: prNumber, owner, repo, error.
+func ParsePRInput(input string) (int, string, string, error) {
+	if prNumber, err := strconv.Atoi(input); err == nil {
+		return prNumber, "", "", nil
+	}
+
+	if !strings.HasPrefix(input, "http") {
+		return 0, "", "", fmt.Errorf("invalid input: must be a PR number or GitHub URL")
+	}
+
+	parsedURL, err := url.Parse(input)
+	if err != nil {
+		return 0, "", "", fmt.Errorf("invalid URL: %w", err)
+	}
+
+	if parsedURL.Host != GitHubHost {
+		return 0, "", "", fmt.Errorf("URL must be from github.com")
+	}
+
+	pathParts := strings.Split(strings.Trim(parsedURL.Path, "/"), "/")
+	if len(pathParts) != 4 || pathParts[2] != "pull" {
+		return 0, "", "", fmt.Errorf("invalid GitHub PR URL format")
+	}
+
+	owner := pathParts[0]
+	repo := pathParts[1]
+	prNumber, err := strconv.Atoi(pathParts[3])
+	if err != nil {
+		return 0, "", "", fmt.Errorf("invalid PR number: %s", pathParts[3])
+	}
+
+	return prNumber, owner, repo, nil
 }
 
 // GetFileContent fetches the content of a file from a specific SHA.

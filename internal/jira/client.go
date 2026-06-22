@@ -2,6 +2,7 @@ package jira
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	token      string
+	email      string
 	ctx        context.Context
 }
 
@@ -74,17 +76,18 @@ type JiraSearchResponse struct {
 }
 
 // NewClient creates a new Jira client.
-func NewClient(ctx context.Context, token string) *Client {
-	if token == "" {
+func NewClient(ctx context.Context, email, token string) *Client {
+	if token == "" || email == "" {
 		return nil
 	}
 
 	return &Client{
-		baseURL: "https://issues.redhat.com",
+		baseURL: "https://redhat.atlassian.net",
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 		token: token,
+		email: email,
 		ctx:   ctx,
 	}
 }
@@ -100,7 +103,7 @@ func (c *Client) GetIssue(issueKey string) (*JiraIssue, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(c.email+":"+c.token)))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -151,7 +154,7 @@ func (c *Client) getRemoteLinks(issueKey string) ([]RemoteLink, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(c.email+":"+c.token)))
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -265,7 +268,7 @@ func ExtractMGMTTicketFromTitle(title string) string {
 // It supports URLs like https://issues.redhat.com/browse/ACM-22787 and direct ticket IDs like MGMT-20662
 func ExtractJiraTicketFromText(text string) string {
 	// First try to extract from JIRA URL format
-	urlRegex := regexp.MustCompile(`https://issues\.redhat\.com/browse/([A-Z]+-\d+)`)
+	urlRegex := regexp.MustCompile(`https://redhat\.atlassian\.net/browse/([A-Z]+-\d+)`)
 	matches := urlRegex.FindStringSubmatch(text)
 	if len(matches) >= 2 {
 		return matches[1]
@@ -283,8 +286,7 @@ func ExtractJiraTicketFromText(text string) string {
 
 // ExtractJiraTicketWithPrefix extracts JIRA ticket from text with specific project prefix.
 func ExtractJiraTicketWithPrefix(text, projectPrefix string) string {
-	// First try to extract from JIRA URL format
-	urlPattern := fmt.Sprintf(`https://issues\.redhat\.com/browse/(%s-\d+)`, projectPrefix)
+	urlPattern := fmt.Sprintf(`https://redhat\.atlassian\.net/browse/(%s-\d+)`, projectPrefix)
 	urlRegex := regexp.MustCompile(urlPattern)
 	matches := urlRegex.FindStringSubmatch(text)
 	if len(matches) >= 2 {

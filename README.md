@@ -23,6 +23,7 @@ export PATH=$PATH:~/go/bin
 export PR_BOT_GITHUB_TOKEN="your_github_token_here"
 export PR_BOT_GITLAB_TOKEN="your_gitlab_token_here" 
 export PR_BOT_JIRA_TOKEN="your_jira_token_here"
+export PR_BOT_JIRA_EMAIL="your_email@redhat.com"
 
 # Start analyzing PRs right away - no external files needed!
 pr-bot -pr https://github.com/openshift/assisted-service/pull/7788
@@ -38,7 +39,8 @@ cat > .env << EOF
 # Required tokens for all functionality
 PR_BOT_GITHUB_TOKEN=your_github_token_here
 PR_BOT_GITLAB_TOKEN=your_gitlab_token_here
-PR_BOT_JIRA_TOKEN=your_jira_token_here
+PR_BOT_JIRA_TOKEN=your_jira_api_token_here
+PR_BOT_JIRA_EMAIL=your_email@redhat.com
 
 # Required for Slack bot server mode (OAuth bot token)
 PR_BOT_SLACK_BOT_TOKEN=xoxb-your-bot-token-here
@@ -226,28 +228,32 @@ gh release create v0.X.X --title "vX.X.X - Release Title" --notes "Release notes
 
 ### JIRA Token Setup (Required for -jt flag)
 
-For JIRA ticket analysis, you'll need a JIRA API token:
+For JIRA ticket analysis, you'll need a JIRA API token from Atlassian Cloud:
 
 1. **Get JIRA API Token**:
-   - Go to [Red Hat JIRA API Tokens](https://issues.redhat.com/secure/ViewProfile.jspa?selectedTab=com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens)
-   - Click "Create token"
+   - Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+   - Click "Create API token"
    - Give it a name like "pr-bot"
    - Copy the generated token
 
-2. **Set as environment variable**:
+2. **Set as environment variables** (both token and email are required):
    - **For CLI usage:**
      ```bash
-     export PR_BOT_JIRA_TOKEN="your-jira-token-here"
+     export PR_BOT_JIRA_TOKEN="your-jira-api-token-here"
+     export PR_BOT_JIRA_EMAIL="your-email@redhat.com"
      ```
    - **For Slack server usage (add to .env file):**
      ```bash
-     echo "PR_BOT_JIRA_TOKEN=your-jira-token-here" >> .env
+     echo "PR_BOT_JIRA_TOKEN=your-jira-api-token-here" >> .env
+     echo "PR_BOT_JIRA_EMAIL=your-email@redhat.com" >> .env
      ```
 
 **Important Notes:**
-- Required only if you want to use the `-jt` flag for JIRA ticket analysis
+- JIRA is hosted at `redhat.atlassian.net` (Atlassian Cloud)
+- Both `PR_BOT_JIRA_TOKEN` and `PR_BOT_JIRA_EMAIL` are required (Atlassian Cloud uses Basic Auth)
 - The token should have read access to JIRA issues
 - Used to find cloned tickets and extract GitHub PR URLs from JIRA tickets
+- Supports any JIRA project prefix (MGMT, ACM, OCPBUGS, etc.)
 
 ### GitLab Token Setup (Required for SaaS Badges and MCE Validation)
 
@@ -357,12 +363,14 @@ PR_BOT_GITHUB_DEFAULT_BRANCH=master
 
 # Slack Bot Configuration (OAuth bot token for server mode)
 PR_BOT_SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+PR_BOT_SLACK_SIGNING_SECRET=your-slack-signing-secret-here  # Optional: enables request verification
 
 # GitLab Configuration (for MCE snapshot validation)
 PR_BOT_GITLAB_TOKEN=your-gitlab-token-here
 
-# JIRA Configuration (for MGMT ticket analysis)
-PR_BOT_JIRA_TOKEN=your-jira-token-here
+# JIRA Configuration (Atlassian Cloud - redhat.atlassian.net)
+PR_BOT_JIRA_TOKEN=your-jira-api-token-here
+PR_BOT_JIRA_EMAIL=your-email@redhat.com
 
 # Google Sheets Configuration (Required - service account for private sheets)
 PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project", "private_key_id": "...", "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n", "client_email": "your-service-account@project-id.iam.gserviceaccount.com", "client_id": "...", "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}'
@@ -400,7 +408,8 @@ export PR_BOT_GOOGLE_SHEET_ID="your-google-sheet-id"
 export PR_BOT_GITLAB_TOKEN="your-gitlab-token-here"
 
 # JIRA Configuration (Required for JIRA ticket analysis)
-export PR_BOT_JIRA_TOKEN="your-jira-token-here"
+export PR_BOT_JIRA_TOKEN="your-jira-api-token-here"
+export PR_BOT_JIRA_EMAIL="your-email@redhat.com"
 ```
 
 ### Config File
@@ -481,7 +490,7 @@ Analyze all PRs related to a JIRA ticket (finds backports automatically):
 
 ```bash
 # Full URL
-pr-bot -jt https://issues.redhat.com/browse/MGMT-20662
+pr-bot -jt https://redhat.atlassian.net/browse/MGMT-20662
 
 # Just ticket ID
 pr-bot -jt MGMT-20662

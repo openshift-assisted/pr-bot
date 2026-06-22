@@ -31,16 +31,27 @@ const (
 	MCEVersionOffset = 5 // MCE version is 5 versions behind ACM
 )
 
+const cacheTTL = 1 * time.Hour
+
+const ReleaseScheduleURL = "https://docs.google.com/spreadsheets/d/1kf0rj7J3DkP-Ddd-Ixy1F79b9U69_Wniob-ewH_H4l4/edit?gid=2089594794#gid=2089594794"
+
+// SheetsUnavailableMessage returns a user-friendly message when Google Sheets data is unavailable.
+func SheetsUnavailableMessage() string {
+	return fmt.Sprintf("⚠️  Release schedule data is currently unavailable (Google Sheets API error).\n   View the release schedule directly: %s", ReleaseScheduleURL)
+}
+
 // Parser handles GA status parsing from Google Sheets.
 type Parser struct {
 	sheetsClient *SheetsClient
 
-	// Background parsing and caching
 	cache        *parsedData
 	cacheMutex   sync.RWMutex
 	parseOnce    sync.Once
-	parseChannel chan struct{} // Signals when parsing is complete
+	parseChannel chan struct{}
 	parseError   error
+
+	serviceAccountJSON string
+	sheetID            string
 }
 
 // parsedData holds the cached Google Sheets data
@@ -64,8 +75,10 @@ func NewParser(serviceAccountJSON, sheetID string) (*Parser, error) {
 	}
 
 	p := &Parser{
-		sheetsClient: sheetsClient,
-		parseChannel: make(chan struct{}),
+		sheetsClient:       sheetsClient,
+		parseChannel:       make(chan struct{}),
+		serviceAccountJSON: serviceAccountJSON,
+		sheetID:            sheetID,
 	}
 
 	// Start background parsing
@@ -116,7 +129,6 @@ func (p *Parser) backgroundParse() {
 
 // waitForData waits for background parsing to complete and returns the cached data.
 func (p *Parser) waitForData() (*parsedData, error) {
-	// Wait for parsing to complete
 	<-p.parseChannel
 
 	if p.parseError != nil {
@@ -124,13 +136,53 @@ func (p *Parser) waitForData() (*parsedData, error) {
 	}
 
 	p.cacheMutex.RLock()
-	defer p.cacheMutex.RUnlock()
+	cache := p.cache
+	p.cacheMutex.RUnlock()
 
-	if p.cache == nil {
+	if cache == nil {
 		return nil, fmt.Errorf("parsed data not available")
 	}
 
-	return p.cache, nil
+	if time.Since(cache.lastParsed) > cacheTTL {
+		go p.refreshCache()
+	}
+
+	return cache, nil
+}
+
+// refreshCache re-parses Google Sheets data and updates the cache.
+func (p *Parser) refreshCache() {
+	p.cacheMutex.Lock()
+	if p.cache != nil && time.Since(p.cache.lastParsed) <= cacheTTL {
+		p.cacheMutex.Unlock()
+		return
+	}
+	p.cacheMutex.Unlock()
+
+	logger.Debug("Refreshing Google Sheets cache (stale for %v)", time.Since(p.cache.lastParsed))
+
+	inProgressReleases, err := p.sheetsClient.ReadInProgressSheet()
+	if err != nil {
+		logger.Debug("Failed to refresh 'In Progress' sheet: %v", err)
+		return
+	}
+
+	completedReleases, err := p.sheetsClient.ReadCompletedSheet()
+	if err != nil {
+		logger.Debug("Failed to refresh 'Completed Releases' sheet: %v", err)
+		return
+	}
+
+	p.cacheMutex.Lock()
+	p.cache = &parsedData{
+		inProgressReleases: inProgressReleases,
+		completedReleases:  completedReleases,
+		allReleases:        append(inProgressReleases, completedReleases...),
+		lastParsed:         time.Now(),
+	}
+	p.cacheMutex.Unlock()
+
+	logger.Debug("Google Sheets cache refreshed (%d releases)", len(p.cache.allReleases))
 }
 
 // ReleaseInfo represents release information from Google Sheets.

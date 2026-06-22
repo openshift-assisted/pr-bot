@@ -6,9 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -781,7 +779,7 @@ func handlePRAnalysis(prURL string) {
 	}
 
 	// Parse PR number or URL
-	prNumber, owner, repo, err := parsePRInput(prURL)
+	prNumber, owner, repo, err := github.ParsePRInput(prURL)
 	if err != nil {
 		log.Fatalf("Failed to parse PR input '%s': %v", prURL, err)
 	}
@@ -794,63 +792,20 @@ func handlePRAnalysis(prURL string) {
 
 	// Create analyzer and run analysis
 	ctx := context.Background()
-	analyzer := analyzer.New(ctx, cfg)
+	a, err := analyzer.New(ctx, cfg)
+	if err != nil {
+		log.Fatalf("Failed to create analyzer: %v", err)
+	}
 
-	result, err := analyzer.AnalyzePR(prNumber)
+	result, err := a.AnalyzePR(prNumber)
 	if err != nil {
 		log.Fatalf("Failed to analyze PR #%d: %v", prNumber, err)
 	}
 
 	// Print results
-	analyzer.PrintSummary(result)
+	a.PrintSummary(result)
 }
 
-// parsePRInput parses PR input which can be either a number or a GitHub URL
-// Returns: prNumber, owner, repo, error.
-func parsePRInput(input string) (int, string, string, error) {
-	// First try to parse as a number
-	if prNumber, err := strconv.Atoi(input); err == nil {
-		return prNumber, "", "", nil
-	}
-
-	// Try to parse as a GitHub URL
-	if strings.HasPrefix(input, "http") {
-		return parsePRURL(input)
-	}
-
-	return 0, "", "", fmt.Errorf("invalid input: must be a PR number or GitHub URL")
-}
-
-// parsePRURL parses a GitHub PR URL and extracts owner, repo, and PR number.
-// Example: https://github.com/openshift/assisted-service/pull/1234
-func parsePRURL(prURL string) (int, string, string, error) {
-	parsedURL, err := url.Parse(prURL)
-	if err != nil {
-		return 0, "", "", fmt.Errorf("invalid URL: %w", err)
-	}
-
-	if parsedURL.Host != "github.com" {
-		return 0, "", "", fmt.Errorf("URL must be from github.com")
-	}
-
-	// Use regex to match GitHub PR URL pattern
-	// Path should be: /owner/repo/pull/number
-	prRegex := regexp.MustCompile(`^/([^/]+)/([^/]+)/pull/(\d+)/?$`)
-	matches := prRegex.FindStringSubmatch(parsedURL.Path)
-
-	if len(matches) != 4 {
-		return 0, "", "", fmt.Errorf("invalid GitHub PR URL format")
-	}
-
-	owner := matches[1]
-	repo := matches[2]
-	prNumber, err := strconv.Atoi(matches[3])
-	if err != nil {
-		return 0, "", "", fmt.Errorf("invalid PR number in URL: %w", err)
-	}
-
-	return prNumber, owner, repo, nil
-}
 
 // handleJiraTicketAnalysis analyzes all PRs related to a JIRA ticket
 func handleJiraTicketAnalysis(jiraInput string) {
@@ -878,7 +833,7 @@ func handleJiraTicketAnalysis(jiraInput string) {
 	ctx := context.Background()
 
 	// Create JIRA client for ticket discovery
-	jiraClient := jira.NewClient(ctx, cfg.JiraToken)
+	jiraClient := jira.NewClient(ctx, cfg.JiraEmail, cfg.JiraToken)
 
 	// Get all related JIRA tickets (main ticket + cloned tickets)
 	fmt.Printf("Finding all related JIRA tickets...\n")
@@ -959,7 +914,7 @@ func handleJiraTicketAnalysis(jiraInput string) {
 			defer func() { <-semaphore }()
 
 			// Parse PR URL to get repository information
-			prNumber, owner, repo, err := parsePRURL(prURL)
+			prNumber, owner, repo, err := github.ParsePRInput(prURL)
 			if err != nil {
 				fmt.Printf("Warning: Failed to parse PR URL %s: %v\n", prURL, err)
 				return
@@ -973,10 +928,14 @@ func handleJiraTicketAnalysis(jiraInput string) {
 			}
 
 			// Create analyzer for this specific repository
-			prAnalyzer := analyzer.New(ctx, &prCfg)
+			prAnalyzer, err := analyzer.New(ctx, &prCfg)
+			if err != nil {
+				fmt.Printf("Error creating analyzer for PR #%d: %v\n", prNumber, err)
+				return
+			}
 
 			fmt.Printf("\nAnalyzing PR #%d (%s/%s)...\n", prNumber, prCfg.Owner, prCfg.Repository)
-			result, err := prAnalyzer.AnalyzePRWithOptions(prNumber, true) // Skip JIRA analysis since we already have the context
+			result, err := prAnalyzer.AnalyzePRWithOptions(prNumber, true)
 			if err != nil {
 				fmt.Printf("Error analyzing PR #%d: %v\n", prNumber, err)
 				return
@@ -993,7 +952,7 @@ func handleJiraTicketAnalysis(jiraInput string) {
 	wg.Wait()
 
 	// Display combined results
-	fmt.Printf("\n" + strings.Repeat("=", 80) + "\n")
+	fmt.Print("\n" + strings.Repeat("=", 80) + "\n")
 	fmt.Printf("=== COMBINED ANALYSIS RESULTS ===\n")
 	fmt.Printf("Main JIRA Ticket: %s\n", ticketID)
 	fmt.Printf("Related Tickets: %s\n", strings.Join(allTicketKeys[1:], ", "))
@@ -1005,7 +964,7 @@ func handleJiraTicketAnalysis(jiraInput string) {
 
 	for _, result := range allResults {
 		// Extract repository from PR URL for display
-		_, owner, repo, _ := parsePRURL(result.PR.URL)
+		_, owner, repo, _ := github.ParsePRInput(result.PR.URL)
 		repoDisplay := ""
 		if owner != "" && repo != "" {
 			repoDisplay = fmt.Sprintf(" [%s/%s]", owner, repo)
@@ -1054,8 +1013,8 @@ func handleJiraTicketAnalysis(jiraInput string) {
 			branches := patternGroups[pattern]
 			sort.Slice(branches, func(i, j int) bool {
 				// Parse version numbers for proper sorting (e.g., "2.13" < "2.14" < "2.15")
-				versionI := parseVersionNumber(branches[i].Version)
-				versionJ := parseVersionNumber(branches[j].Version)
+				versionI := models.ParseVersionNumber(branches[i].Version)
+				versionJ := models.ParseVersionNumber(branches[j].Version)
 				return versionI < versionJ
 			})
 			patternGroups[pattern] = branches
@@ -1067,7 +1026,7 @@ func handleJiraTicketAnalysis(jiraInput string) {
 		for _, pattern := range patternOrder {
 			branches := patternGroups[pattern]
 			if len(branches) > 0 {
-				fmt.Printf("\n  %s branches (%d):\n", getPatternDescription(pattern), len(branches))
+				fmt.Printf("\n  %s branches (%d):\n", models.PatternDescription(pattern), len(branches))
 				for _, branch := range branches {
 					isNextVersion := strings.Contains(branch.Version, "Next Version") ||
 						(branch.GAStatus.ACM.Status == "Next Version" || branch.GAStatus.MCE.Status == "Next Version")
@@ -1184,71 +1143,8 @@ func handleJiraTicketAnalysis(jiraInput string) {
 	fmt.Printf("\nJIRA ticket analysis completed at: %s\n", time.Now().Format("01-02-2006 15:04:05"))
 }
 
-// extractJiraTicketID extracts the ticket ID from a JIRA URL or returns the input if it's already a ticket ID
 func extractJiraTicketID(input string) string {
-	// If it's already in MGMT-XXXXX format, return as is
-	if matched, _ := regexp.MatchString(`^MGMT-\d+$`, input); matched {
-		return input
-	}
-
-	// If it's a URL, extract the ticket ID
-	if strings.Contains(input, "issues.redhat.com/browse/") {
-		parts := strings.Split(input, "/")
-		if len(parts) > 0 {
-			ticketID := parts[len(parts)-1]
-			if matched, _ := regexp.MatchString(`^MGMT-\d+$`, ticketID); matched {
-				return ticketID
-			}
-		}
-	}
-
-	return ""
-}
-
-// extractPRNumberFromURL extracts PR number from GitHub PR URL
-func extractPRNumberFromURL(prURL string) (int, error) {
-	re := regexp.MustCompile(`github\.com/.+/.+/pull/(\d+)`)
-	matches := re.FindStringSubmatch(prURL)
-	if len(matches) < 2 {
-		return 0, fmt.Errorf("invalid PR URL format")
-	}
-	return strconv.Atoi(matches[1])
-}
-
-// getPatternDescription returns a human-readable description for branch patterns
-func getPatternDescription(pattern string) string {
-	switch pattern {
-	case "release-ocm-":
-		return "ACM/MCE"
-	case "release-":
-		return "OpenShift"
-	case "release-v":
-		return "Release-v"
-	case "v":
-		return "SaaS versions"
-	default:
-		return pattern
-	}
-}
-
-// parseVersionNumber extracts and parses version number from version string for sorting.
-// Examples: "2.13" -> 2.13, "v2.40" -> 2.40, "Next Version" -> 999.0 (sorts last)
-func parseVersionNumber(version string) float64 {
-	// Handle special cases
-	if strings.Contains(version, "Next Version") {
-		return 999.0 // Sort "Next Version" entries last
-	}
-
-	// Strip "v" prefix if present
-	version = strings.TrimPrefix(version, "v")
-
-	// Parse as float (handles X.Y format)
-	if parsed, err := strconv.ParseFloat(version, 64); err == nil {
-		return parsed
-	}
-
-	// If parsing fails, return 0 (sorts first)
-	return 0.0
+	return jira.ExtractJiraTicketFromText(input)
 }
 
 // startSlackServer starts the Slack bot server
@@ -1260,7 +1156,10 @@ func startSlackServer(port int) {
 	}
 
 	// Create and start Slack server
-	slackServer := server.NewSlackServer(cfg)
+	slackServer, err := server.NewSlackServer(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create Slack server: %v", err)
+	}
 
 	fmt.Printf("🤖 Starting Slack bot server on port %d...\n", port)
 	if err := slackServer.Start(port); err != nil {

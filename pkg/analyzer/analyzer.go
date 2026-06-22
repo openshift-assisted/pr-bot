@@ -10,6 +10,7 @@ import (
 
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/shay23bra/pr-bot/internal/ga"
 	"github.com/shay23bra/pr-bot/internal/github"
@@ -39,24 +40,18 @@ type Analyzer struct {
 }
 
 // New creates a new analyzer instance.
-func New(ctx context.Context, config *models.Config) *Analyzer {
+func New(ctx context.Context, config *models.Config) (*Analyzer, error) {
+	if config.GoogleServiceAccountJSON == "" || config.GoogleSheetID == "" {
+		return nil, fmt.Errorf("Google Sheets configuration missing (PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON and PR_BOT_GOOGLE_SHEET_ID required)")
+	}
+
 	githubClient := github.NewClient(ctx, config.GitHubToken)
 
-	// Create GA parser - requires Google Sheets configuration with service account
-	var gaParser *ga.Parser
-	if config.GoogleServiceAccountJSON != "" && config.GoogleSheetID != "" {
-		logger.Debug("Using Google Sheets for GA data (Sheet ID: %s)", config.GoogleSheetID)
-		var err error
-		gaParser, err = ga.NewParser(config.GoogleServiceAccountJSON, config.GoogleSheetID)
-		if err != nil {
-			logger.Debug("Failed to create Google Sheets parser: %v", err)
-			return nil
-		}
-	} else {
-		logger.Debug("Google Sheets configuration missing (PR_BOT_GOOGLE_SERVICE_ACCOUNT_JSON and PR_BOT_GOOGLE_SHEET_ID required)")
-		return nil
+	gaParser, err := ga.NewParser(config.GoogleServiceAccountJSON, config.GoogleSheetID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Google Sheets parser: %w", err)
 	}
-	// Slack integration is now handled by the server component
+	logger.Debug("Using Google Sheets for GA data (Sheet ID: %s)", config.GoogleSheetID)
 
 	var gitlabClient *gitlab.Client
 	if config.GitLabToken != "" {
@@ -64,8 +59,8 @@ func New(ctx context.Context, config *models.Config) *Analyzer {
 	}
 
 	var jiraClient *jira.Client
-	if config.JiraToken != "" {
-		jiraClient = jira.NewClient(ctx, config.JiraToken)
+	if config.JiraToken != "" && config.JiraEmail != "" {
+		jiraClient = jira.NewClient(ctx, config.JiraEmail, config.JiraToken)
 	}
 
 	return &Analyzer{
@@ -74,7 +69,7 @@ func New(ctx context.Context, config *models.Config) *Analyzer {
 		gaParser:     gaParser,
 		gitlabClient: gitlabClient,
 		jiraClient:   jiraClient,
-	}
+	}, nil
 }
 
 // AnalyzePR performs complete analysis of a pull request.
@@ -119,6 +114,7 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 
 	// Check PR presence in each relevant release branch using goroutines for parallel processing
 	branchPresences := make([]models.BranchPresence, len(filteredBranches))
+	var sheetsUnavailable atomic.Bool
 
 	// Use a channel to control concurrency (limit to avoid overwhelming GitHub API)
 	concurrencyLimit := 10
@@ -160,12 +156,13 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 				gaStatus, gaErr = a.gaParser.GetGAStatus(branch.Name, mergedAt)
 				if gaErr != nil {
 					logger.Debug("Warning: failed to get GA status for %s: %v", branch.Name, gaErr)
+					sheetsUnavailable.Store(true)
 				}
 
-				// Get upcoming GA versions
 				upcomingGAs, gaErr = a.gaParser.GetUpcomingGAVersions(branch.Name, mergedAt)
 				if gaErr != nil {
 					logger.Debug("Warning: failed to get upcoming GA versions for %s: %v", branch.Name, gaErr)
+					sheetsUnavailable.Store(true)
 				}
 			} else if branch.Pattern == "releases/v" && a.config.Repository == "assisted-installer-ui" {
 				// TEMPORARILY DISABLED: For UI release branches, find the corresponding ACM/MCE versions
@@ -243,9 +240,10 @@ func (a *Analyzer) AnalyzePRWithOptions(prNumber int, skipJiraAnalysis bool) (*m
 	wg.Wait()
 
 	result := &models.PRAnalysisResult{
-		PR:              *prInfo,
-		ReleaseBranches: branchPresences,
-		AnalyzedAt:      time.Now(),
+		PR:                *prInfo,
+		ReleaseBranches:   branchPresences,
+		AnalyzedAt:        time.Now(),
+		SheetsUnavailable: sheetsUnavailable.Load(),
 	}
 
 	// Perform JIRA analysis if JIRA client is available and PR title contains any JIRA ticket
@@ -582,8 +580,8 @@ func (a *Analyzer) PrintSummary(result *models.PRAnalysisResult) {
 		branches := patternGroups[pattern]
 		sort.Slice(branches, func(i, j int) bool {
 			// Parse version numbers for proper sorting (e.g., "2.13" < "2.14" < "2.15")
-			versionI := parseVersionNumber(branches[i].Version)
-			versionJ := parseVersionNumber(branches[j].Version)
+			versionI := models.ParseVersionNumber(branches[i].Version)
+			versionJ := models.ParseVersionNumber(branches[j].Version)
 			return versionI < versionJ
 		})
 		patternGroups[pattern] = branches
@@ -596,7 +594,7 @@ func (a *Analyzer) PrintSummary(result *models.PRAnalysisResult) {
 		for _, pattern := range patternOrder {
 			branches := patternGroups[pattern]
 			if len(branches) > 0 {
-				fmt.Printf("\n  %s branches (%d):\n", getPatternDescription(pattern), len(branches))
+				fmt.Printf("\n  %s branches (%d):\n", models.PatternDescription(pattern), len(branches))
 				for _, branch := range branches {
 					isNextVersion := strings.Contains(branch.Version, "Next Version") ||
 						(branch.GAStatus.ACM.Status == "Next Version" || branch.GAStatus.MCE.Status == "Next Version")
@@ -714,7 +712,7 @@ func (a *Analyzer) PrintSummary(result *models.PRAnalysisResult) {
 			for _, pattern := range patternOrder {
 				branches := patternNotFound[pattern]
 				if len(branches) > 0 {
-					fmt.Printf("\n  %s branches (%d):\n", getPatternDescription(pattern), len(branches))
+					fmt.Printf("\n  %s branches (%d):\n", models.PatternDescription(pattern), len(branches))
 					for _, branch := range branches {
 						fmt.Printf("    - %s (v%s)\n", branch.BranchName, branch.Version)
 					}
@@ -723,46 +721,13 @@ func (a *Analyzer) PrintSummary(result *models.PRAnalysisResult) {
 		}
 	*/
 
+	if result.SheetsUnavailable {
+		fmt.Printf("\n%s\n", ga.SheetsUnavailableMessage())
+	}
+
 	fmt.Printf("\nAnalysis completed at: %s\n", result.AnalyzedAt.Format("01-02-2006 15:04:05"))
 }
 
-// getPatternDescription returns a human-readable description for branch patterns.
-func getPatternDescription(pattern string) string {
-	switch pattern {
-	case "release-ocm-":
-		return "ACM/MCE"
-	case "releases/v":
-		return "UI Release"
-	case "release-":
-		return "OpenShift"
-	case "release-v":
-		return "Version-tagged"
-	case "v":
-		return "SaaS versions"
-	default:
-		return pattern
-	}
-}
-
-// parseVersionNumber extracts and parses version number from version string for sorting.
-// Examples: "2.13" -> 2.13, "v2.40" -> 2.40, "Next Version" -> 999.0 (sorts last)
-func parseVersionNumber(version string) float64 {
-	// Handle special cases
-	if strings.Contains(version, "Next Version") {
-		return 999.0 // Sort "Next Version" entries last
-	}
-
-	// Strip "v" prefix if present
-	version = strings.TrimPrefix(version, "v")
-
-	// Parse as float (handles X.Y format)
-	if parsed, err := strconv.ParseFloat(version, 64); err == nil {
-		return parsed
-	}
-
-	// If parsing fails, return 0 (sorts first)
-	return 0.0
-}
 
 // performMCEValidation performs MCE snapshot validation for released GAs only.
 func (a *Analyzer) performMCEValidation(upcomingGAs []models.UpcomingGA, prCommitSHA string) []models.UpcomingGA {
@@ -1006,4 +971,66 @@ func (a *Analyzer) isBranchRelevant(branch github.BranchInfo, prYear int) bool {
 // GetGitLabClient returns the GitLab client instance
 func (a *Analyzer) GetGitLabClient() *gitlab.Client {
 	return a.gitlabClient
+}
+
+// CompareVersions compares a component version with its previous release and returns the commits between them.
+func (a *Analyzer) CompareVersions(component, version string) (*models.VersionComparisonResult, error) {
+	owner, repo := getRepositoryForComponent(component)
+
+	exists, err := a.githubClient.TagExists(owner, repo, version)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check tag: %w", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("no release found with tag '%s' in %s/%s", version, owner, repo)
+	}
+
+	previousVersion, err := a.githubClient.FindPreviousVersion(owner, repo, version)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find previous version: %w", err)
+	}
+
+	commits, err := a.githubClient.GetCommitsBetweenTags(owner, repo, previousVersion, version)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get commits: %w", err)
+	}
+
+	result := &models.VersionComparisonResult{
+		Component:       component,
+		Owner:           owner,
+		Repository:      repo,
+		TargetVersion:   version,
+		PreviousVersion: previousVersion,
+	}
+
+	for i := len(commits) - 1; i >= 0; i-- {
+		c := commits[i]
+		hash := c.GetSHA()
+		if len(hash) > 8 {
+			hash = hash[:8]
+		}
+		date := "Unknown date"
+		if c.Commit != nil && c.Commit.Committer != nil && c.Commit.Committer.Date != nil {
+			date = c.Commit.Committer.Date.GetTime().Format("2006-01-02 15:04:05")
+		}
+		title := strings.Split(c.GetCommit().GetMessage(), "\n")[0]
+		result.Commits = append(result.Commits, models.CommitInfo{ShortHash: hash, Date: date, Title: title})
+	}
+
+	return result, nil
+}
+
+func getRepositoryForComponent(component string) (string, string) {
+	switch component {
+	case "assisted-service":
+		return "openshift", "assisted-service"
+	case "assisted-installer":
+		return "openshift", "assisted-installer"
+	case "assisted-installer-agent":
+		return "openshift", "assisted-installer-agent"
+	case "assisted-installer-ui":
+		return "openshift-assisted", "assisted-installer-ui"
+	default:
+		return "openshift", "assisted-service"
+	}
 }

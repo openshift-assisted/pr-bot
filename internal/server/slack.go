@@ -3,15 +3,23 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
-	"net/url"
 	"strconv"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/shay23bra/pr-bot/internal/ga"
 	"github.com/shay23bra/pr-bot/internal/github"
 	"github.com/shay23bra/pr-bot/internal/jira"
 	"github.com/shay23bra/pr-bot/internal/logger"
@@ -29,14 +37,16 @@ type SlackServer struct {
 }
 
 // NewSlackServer creates a new Slack server instance
-func NewSlackServer(cfg *models.Config) *SlackServer {
+func NewSlackServer(cfg *models.Config) (*SlackServer, error) {
 	ctx := context.Background()
-	analyzer := analyzer.New(ctx, cfg)
+	a, err := analyzer.New(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create analyzer: %w", err)
+	}
 
 	var botClient *slack.BotClient
 	if cfg.SlackBotToken != "" {
 		botClient = slack.NewBotClient(cfg.SlackBotToken)
-		// Test authentication and get bot user ID
 		if err := botClient.TestAuth(ctx); err != nil {
 			logger.Debug("Failed to authenticate Slack bot: %v", err)
 		}
@@ -44,16 +54,17 @@ func NewSlackServer(cfg *models.Config) *SlackServer {
 
 	return &SlackServer{
 		config:    cfg,
-		analyzer:  analyzer,
+		analyzer:  a,
 		botClient: botClient,
-	}
+	}, nil
 }
 
-// Start starts the Slack bot server
+// Start starts the Slack bot server with graceful shutdown.
 func (s *SlackServer) Start(port int) error {
-	http.HandleFunc("/slack/commands", s.handleSlashCommand)
-	http.HandleFunc("/slack/events", s.handleEvents)
-	http.HandleFunc("/health", s.handleHealth)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slack/commands", s.verifySlackRequest(s.handleSlashCommand))
+	mux.HandleFunc("/slack/events", s.verifySlackRequest(s.handleEvents))
+	mux.HandleFunc("/health", s.handleHealth)
 
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("🚀 Slack bot server starting on port %d\n", port)
@@ -62,7 +73,71 @@ func (s *SlackServer) Start(port int) error {
 	fmt.Printf("   POST /slack/events   - Slack event subscriptions\n")
 	fmt.Printf("   GET  /health        - Health check\n")
 
-	return http.ListenAndServe(addr, nil)
+	if s.config.SlackSigningSecret == "" {
+		logger.Debug("⚠️  Slack signing secret not configured — requests will not be verified")
+	}
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		fmt.Println("\n🛑 Shutting down server...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	return srv.ListenAndServe()
+}
+
+// verifySlackRequest wraps a handler with Slack request signature verification.
+func (s *SlackServer) verifySlackRequest(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.config.SlackSigningSecret == "" {
+			next(w, r)
+			return
+		}
+
+		timestamp := r.Header.Get("X-Slack-Request-Timestamp")
+		signature := r.Header.Get("X-Slack-Signature")
+
+		if timestamp == "" || signature == "" {
+			http.Error(w, "Missing Slack signature headers", http.StatusUnauthorized)
+			return
+		}
+
+		// Reject requests older than 5 minutes to prevent replay attacks
+		ts, err := strconv.ParseInt(timestamp, 10, 64)
+		if err != nil || math.Abs(float64(time.Now().Unix()-ts)) > 300 {
+			http.Error(w, "Request too old", http.StatusUnauthorized)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+
+		baseString := fmt.Sprintf("v0:%s:%s", timestamp, string(body))
+		mac := hmac.New(sha256.New, []byte(s.config.SlackSigningSecret))
+		mac.Write([]byte(baseString))
+		expected := "v0=" + hex.EncodeToString(mac.Sum(nil))
+
+		if !hmac.Equal([]byte(expected), []byte(signature)) {
+			http.Error(w, "Invalid signature", http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
+	}
 }
 
 // handleHealth provides a health check endpoint
@@ -105,7 +180,7 @@ func (s *SlackServer) handleSlashCommand(w http.ResponseWriter, r *http.Request)
 			response = "❌ Usage: `/pr <PR_URL>`"
 		} else {
 			// Send immediate response and process async
-			go s.analyzePRAsync(text, r.FormValue("response_url"))
+			go s.analyzePRAsync(text, r.FormValue("response_url"), userID)
 			response = "🔍 Analyzing PR... This may take a moment. Results will appear shortly."
 		}
 	case "/jt":
@@ -113,7 +188,7 @@ func (s *SlackServer) handleSlashCommand(w http.ResponseWriter, r *http.Request)
 			response = "❌ Usage: `/jt <JIRA_TICKET>`"
 		} else {
 			// Send immediate response and process async
-			go s.analyzeJiraTicketAsync(text, r.FormValue("response_url"))
+			go s.analyzeJiraTicketAsync(text, r.FormValue("response_url"), userID)
 			response = "🔍 Analyzing JIRA ticket... This may take a moment. Results will appear shortly."
 		}
 	case "/version":
@@ -138,24 +213,27 @@ func (s *SlackServer) handleSlashCommand(w http.ResponseWriter, r *http.Request)
 }
 
 // analyzePR analyzes a PR via Slack
-func (s *SlackServer) analyzePR(prURL string) (string, error) {
+func (s *SlackServer) analyzePR(prURL, userID string) (string, error) {
 	// Parse PR number and repository
-	prNumber, owner, repo, err := parsePRURL(prURL)
+	prNumber, owner, repo, err := github.ParsePRInput(prURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse PR URL: %w", err)
 	}
 
-	// Update config with repository info
+	// Create analyzer with correct repository info
+	cfg := *s.config
 	if owner != "" && repo != "" {
-		s.config.Owner = owner
-		s.config.Repository = repo
-		// Recreate analyzer with updated config
-		ctx := context.Background()
-		s.analyzer = analyzer.New(ctx, s.config)
+		cfg.Owner = owner
+		cfg.Repository = repo
+	}
+	ctx := context.Background()
+	a, err := analyzer.New(ctx, &cfg)
+	if err != nil {
+		return "", fmt.Errorf("failed to create analyzer: %w", err)
 	}
 
 	// Analyze PR
-	result, err := s.analyzer.AnalyzePR(prNumber)
+	result, err := a.AnalyzePR(prNumber)
 	if err != nil {
 		return "", fmt.Errorf("failed to analyze PR: %w", err)
 	}
@@ -173,7 +251,7 @@ func (s *SlackServer) analyzePR(prURL string) (string, error) {
 			}
 
 			// Parse PR URL to get details
-			relatedPRNumber, relatedOwner, relatedRepo, parseErr := parsePRURL(prURL)
+			relatedPRNumber, relatedOwner, relatedRepo, parseErr := github.ParsePRInput(prURL)
 			if parseErr != nil {
 				logger.Debug("Failed to parse related PR URL %s: %v", prURL, parseErr)
 				continue
@@ -210,15 +288,23 @@ func (s *SlackServer) analyzePR(prURL string) (string, error) {
 		}
 
 		// Use enhanced formatting that shows related PRs and unmerged PRs
-		return s.formatEnhancedPRAnalysisForSlack(result, unmergedPRs), nil
+		response := s.formatEnhancedPRAnalysisForSlack(result, unmergedPRs, userID)
+		if result.SheetsUnavailable {
+			response += "\n" + sheetsUnavailableSlackMessage()
+		}
+		return response, nil
 	}
 
 	// Format response for Slack (standard format for PRs without JIRA analysis)
-	return s.formatPRAnalysisForSlack(result), nil
+	response := s.formatPRAnalysisForSlack(result, userID)
+	if result.SheetsUnavailable {
+		response += "\n" + sheetsUnavailableSlackMessage()
+	}
+	return response, nil
 }
 
 // analyzeJiraTicket analyzes a JIRA ticket via Slack
-func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
+func (s *SlackServer) analyzeJiraTicket(ticketURL, userID string) (string, error) {
 	logger.Debug("=== STARTING JIRA TICKET ANALYSIS FOR: %s ===", ticketURL)
 	// Extract JIRA ticket ID (supports any project prefix like ACM, MGMT, etc.)
 	ticketID := jira.ExtractJiraTicketFromText(ticketURL)
@@ -233,7 +319,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 
 	// Create JIRA client
 	ctx := context.Background()
-	jiraClient := jira.NewClient(ctx, s.config.JiraToken)
+	jiraClient := jira.NewClient(ctx, s.config.JiraEmail, s.config.JiraToken)
 
 	// Get all related JIRA tickets (main ticket + cloned tickets)
 	allTicketIssues, err := jiraClient.GetAllClonedIssues(ticketID)
@@ -326,7 +412,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 			logger.Debug("Processing PR %d/%d: %s", index+1, len(uniquePRURLs), url)
 
 			// Parse PR URL to get number, owner, repo
-			prNumber, owner, repo, err := parsePRURL(url)
+			prNumber, owner, repo, err := github.ParsePRInput(url)
 			if err != nil {
 				logger.Debug("Failed to parse PR URL %s: %v", url, err)
 				return
@@ -338,16 +424,14 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 			workerConfig.Repository = repo
 
 			// Create analyzer for this specific repository
-			analyzer := analyzer.New(ctx, &workerConfig)
-			if analyzer == nil {
-				logger.Debug("Failed to create analyzer for PR %d, checking if it's unmerged", prNumber)
-				// If analyzer creation fails, still try to get basic PR info to check if it's unmerged
+			a, aErr := analyzer.New(ctx, &workerConfig)
+			if aErr != nil {
+				logger.Debug("Failed to create analyzer for PR %d: %v, checking if it's unmerged", prNumber, aErr)
 				githubClient := github.NewClient(ctx, workerConfig.GitHubToken)
 				prInfo, prErr := githubClient.GetBasicPRInfo(owner, repo, prNumber)
 				if prErr != nil {
 					logger.Debug("Failed to get basic info for PR %d: %v", prNumber, prErr)
 				} else if prInfo.MergedAt == nil {
-					// It's an unmerged PR
 					unmergedPR := models.UnmergedPR{
 						Number: prInfo.Number,
 						Title:  prInfo.Title,
@@ -363,7 +447,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 			}
 
 			// Try to analyze the PR
-			result, err := analyzer.AnalyzePR(prNumber)
+			result, err := a.AnalyzePR(prNumber)
 			if err != nil {
 				logger.Debug("PR %d analysis failed with error: %s", prNumber, err.Error())
 				// Check if it's an unmerged PR
@@ -467,7 +551,7 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL string) (string, error) {
 	logger.Debug("Parallel PR analysis completed: %d merged, %d unmerged", len(relatedPRs), len(unmergedPRs))
 
 	// Format response for Slack
-	return s.formatJiraAnalysisForSlack(jiraAnalysis, relatedPRs, unmergedPRs), nil
+	return s.formatJiraAnalysisForSlack(jiraAnalysis, relatedPRs, unmergedPRs, userID), nil
 }
 
 // handleVersionCommand handles version comparison commands
@@ -492,19 +576,55 @@ func (s *SlackServer) handleVersionCommand(text string) (string, error) {
 
 // compareVersionWithComponent compares regular versions with component
 func (s *SlackServer) compareVersionWithComponent(component, version string) (string, error) {
-	// TODO: Implement regular version comparison for Slack with component
-	return fmt.Sprintf("🚧 Version comparison for %s %s is not yet implemented in Slack mode", component, version), nil
+	ctx := context.Background()
+	cfg := *s.config
+	a, err := analyzer.New(ctx, &cfg)
+	if err != nil {
+		return "", fmt.Errorf("failed to create analyzer: %w", err)
+	}
+
+	result, err := a.CompareVersions(component, version)
+	if err != nil {
+		return "", err
+	}
+
+	return s.formatVersionComparisonForSlack(result), nil
 }
 
 // compareMCEVersionWithComponent compares MCE versions with component
 func (s *SlackServer) compareMCEVersionWithComponent(component, version string) (string, error) {
-	// TODO: Implement MCE version comparison for Slack with component
-	return fmt.Sprintf("🚧 MCE version comparison for %s %s is not yet implemented in Slack mode", component, version), nil
+	return "", fmt.Errorf("MCE version comparison is not yet available in Slack mode — use CLI: `pr-bot -v mce %s %s`", component, version)
+}
+
+func (s *SlackServer) formatVersionComparisonForSlack(result *models.VersionComparisonResult) string {
+	var response strings.Builder
+
+	response.WriteString(fmt.Sprintf("📦 *Version Comparison: %s*\n", result.TargetVersion))
+	response.WriteString(fmt.Sprintf("Component: `%s` (%s/%s)\n", result.Component, result.Owner, result.Repository))
+	response.WriteString(fmt.Sprintf("Comparing: `%s` → `%s`\n", result.PreviousVersion, result.TargetVersion))
+	response.WriteString(fmt.Sprintf("Total commits: %d\n\n", len(result.Commits)))
+
+	if len(result.Commits) == 0 {
+		response.WriteString("No commits found between versions\n")
+		return response.String()
+	}
+
+	for _, c := range result.Commits {
+		response.WriteString(fmt.Sprintf("`%s`  %s  %s\n", c.ShortHash, c.Date, c.Title))
+	}
+
+	return response.String()
 }
 
 // formatPRAnalysisForSlack formats PR analysis results for Slack
-func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult) string {
+func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult, userID string) string {
 	var response strings.Builder
+
+	if userID != "" {
+		response.WriteString(fmt.Sprintf("Hi <@%s>, here's the analysis for pull request %s #%d\n\n", userID, result.PR.URL, result.PR.Number))
+	} else {
+		response.WriteString(fmt.Sprintf("PR Analysis for %s #%d\n\n", result.PR.URL, result.PR.Number))
+	}
 
 	response.WriteString(fmt.Sprintf("📋 *PR Analysis: #%d*\n", result.PR.Number))
 	response.WriteString(fmt.Sprintf("🔗 %s\n", result.PR.URL))
@@ -526,7 +646,7 @@ func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult) 
 
 	response.WriteString("✅ *Found in release branches:*\n")
 	for pattern, branches := range branchGroups {
-		response.WriteString(fmt.Sprintf("📂 *%s branches:*\n", getPatternName(pattern)))
+		response.WriteString(fmt.Sprintf("📂 *%s branches:*\n", models.PatternDisplayName(pattern)))
 		for _, branch := range branches {
 			response.WriteString(fmt.Sprintf("  • `%s` (v%s)", branch.BranchName, branch.Version))
 			if branch.MergedAt != nil {
@@ -559,8 +679,14 @@ func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult) 
 }
 
 // formatEnhancedPRAnalysisForSlack formats PR analysis results with related PRs for Slack
-func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysisResult, unmergedPRs []models.UnmergedPR) string {
+func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysisResult, unmergedPRs []models.UnmergedPR, userID string) string {
 	var response strings.Builder
+
+	if userID != "" {
+		response.WriteString(fmt.Sprintf("Hi <@%s>, here's the analysis for pull request %s #%d\n\n", userID, result.PR.URL, result.PR.Number))
+	} else {
+		response.WriteString(fmt.Sprintf("PR Analysis for %s #%d\n\n", result.PR.URL, result.PR.Number))
+	}
 
 	// Main PR header
 	response.WriteString(fmt.Sprintf("📋 *PR Analysis: #%d*\n", result.PR.Number))
@@ -601,7 +727,7 @@ func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysis
 
 		response.WriteString("✅ *Found in release branches:*\n")
 		for pattern, branches := range branchGroups {
-			response.WriteString(fmt.Sprintf("📂 *%s branches:*\n", getPatternName(pattern)))
+			response.WriteString(fmt.Sprintf("📂 *%s branches:*\n", models.PatternDisplayName(pattern)))
 			for _, branch := range branches {
 				response.WriteString(fmt.Sprintf("  • `%s` (v%s)", branch.BranchName, branch.Version))
 				if branch.MergedAt != nil {
@@ -666,7 +792,7 @@ func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysis
 				}
 
 				for pattern, branches := range branchGroups {
-					response.WriteString(fmt.Sprintf("  📂 *%s branches:*\n", getPatternName(pattern)))
+					response.WriteString(fmt.Sprintf("  📂 *%s branches:*\n", models.PatternDisplayName(pattern)))
 					for _, branch := range branches {
 						response.WriteString(fmt.Sprintf("    • `%s` (v%s)", branch.BranchName, branch.Version))
 						if branch.MergedAt != nil {
@@ -790,8 +916,14 @@ func (s *SlackServer) addGAInfoToSlackResponse(response *strings.Builder, branch
 }
 
 // formatJiraAnalysisForSlack formats JIRA analysis results for Slack
-func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalysis, relatedPRs []models.RelatedPR, unmergedPRs []models.UnmergedPR) string {
+func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalysis, relatedPRs []models.RelatedPR, unmergedPRs []models.UnmergedPR, userID string) string {
 	var response strings.Builder
+
+	if userID != "" {
+		response.WriteString(fmt.Sprintf("Hi <@%s>, here's the analysis for JIRA ticket %s\n\n", userID, jiraAnalysis.MainTicket))
+	} else {
+		response.WriteString(fmt.Sprintf("JIRA Ticket Analysis for %s\n\n", jiraAnalysis.MainTicket))
+	}
 
 	response.WriteString(fmt.Sprintf("🎫 *JIRA Ticket Analysis: %s*\n", jiraAnalysis.MainTicket))
 
@@ -840,7 +972,7 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 			}
 
 			for pattern, branches := range branchGroups {
-				response.WriteString(fmt.Sprintf("  📂 *%s branches:*\n", getPatternName(pattern)))
+				response.WriteString(fmt.Sprintf("  📂 *%s branches:*\n", models.PatternDisplayName(pattern)))
 				for _, branch := range branches {
 					response.WriteString(fmt.Sprintf("    • `%s` (v%s)", branch.BranchName, branch.Version))
 					if branch.MergedAt != nil {
@@ -911,9 +1043,9 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 }
 
 // analyzePRAsync analyzes a PR asynchronously and sends result via response_url
-func (s *SlackServer) analyzePRAsync(prURL, responseURL string) {
+func (s *SlackServer) analyzePRAsync(prURL, responseURL, userID string) {
 	// Perform the analysis
-	result, err := s.analyzePR(prURL)
+	result, err := s.analyzePR(prURL, userID)
 
 	var message string
 	if err != nil {
@@ -927,10 +1059,10 @@ func (s *SlackServer) analyzePRAsync(prURL, responseURL string) {
 }
 
 // analyzeJiraTicketAsync analyzes a JIRA ticket asynchronously and sends result via response_url
-func (s *SlackServer) analyzeJiraTicketAsync(ticketURL, responseURL string) {
+func (s *SlackServer) analyzeJiraTicketAsync(ticketURL, responseURL, userID string) {
 	logger.Debug("=== ASYNC JIRA ANALYSIS STARTED: %s (response_url: %s) ===", ticketURL, responseURL)
 	// Perform the analysis
-	result, err := s.analyzeJiraTicket(ticketURL)
+	result, err := s.analyzeJiraTicket(ticketURL, userID)
 	logger.Debug("=== ASYNC JIRA ANALYSIS COMPLETED: err=%v ===", err)
 
 	var message string
@@ -999,60 +1131,6 @@ func (s *SlackServer) getHelpMessage() string {
 You can also mention the bot (` + "`" + `@pr-bot` + "`" + `) or send direct messages using the same command syntax without the slash.`
 }
 
-// getPatternName returns a user-friendly name for branch patterns
-func getPatternName(pattern string) string {
-	switch pattern {
-	case "release-ocm-":
-		return "ACM/MCE Release"
-	case "release-":
-		return "OpenShift Release"
-	case "release-v":
-		return "Release-v"
-	case "v":
-		return "SaaS versions"
-	case "releases/v":
-		return "UI Release"
-	default:
-		return pattern
-	}
-}
-
-// parsePRURL parses a GitHub PR URL and extracts owner, repo, and PR number
-func parsePRURL(prURL string) (int, string, string, error) {
-	// First try to parse as a number
-	if prNumber, err := strconv.Atoi(prURL); err == nil {
-		return prNumber, "", "", nil
-	}
-
-	// Try to parse as a GitHub URL
-	if !strings.HasPrefix(prURL, "http") {
-		return 0, "", "", fmt.Errorf("invalid input: must be a PR number or GitHub URL")
-	}
-
-	parsedURL, err := url.Parse(prURL)
-	if err != nil {
-		return 0, "", "", fmt.Errorf("invalid URL: %w", err)
-	}
-
-	if parsedURL.Host != "github.com" {
-		return 0, "", "", fmt.Errorf("URL must be from github.com")
-	}
-
-	// Extract path components: /owner/repo/pull/number
-	pathParts := strings.Split(strings.Trim(parsedURL.Path, "/"), "/")
-	if len(pathParts) != 4 || pathParts[2] != "pull" {
-		return 0, "", "", fmt.Errorf("invalid GitHub PR URL format")
-	}
-
-	owner := pathParts[0]
-	repo := pathParts[1]
-	prNumber, err := strconv.Atoi(pathParts[3])
-	if err != nil {
-		return 0, "", "", fmt.Errorf("invalid PR number: %s", pathParts[3])
-	}
-
-	return prNumber, owner, repo, nil
-}
 
 // handleEvents handles Slack event subscriptions
 func (s *SlackServer) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -1121,7 +1199,7 @@ func (s *SlackServer) processSlackEvent(event *slack.Event) {
 // handleMention handles when the bot is mentioned in a channel
 func (s *SlackServer) handleMention(ctx context.Context, event *slack.Event) {
 	command := event.ExtractCommand(s.botUserID)
-	response, err := s.handleTextCommand(command)
+	response, err := s.handleTextCommand(command, event.User)
 
 	if err != nil {
 		response = fmt.Sprintf("❌ Error: %v", err)
@@ -1135,7 +1213,7 @@ func (s *SlackServer) handleMention(ctx context.Context, event *slack.Event) {
 
 // handleDirectMessage handles direct messages to the bot
 func (s *SlackServer) handleDirectMessage(ctx context.Context, event *slack.Event) {
-	response, err := s.handleTextCommand(event.Text)
+	response, err := s.handleTextCommand(event.Text, event.User)
 
 	if err != nil {
 		response = fmt.Sprintf("❌ Error: %v", err)
@@ -1148,7 +1226,7 @@ func (s *SlackServer) handleDirectMessage(ctx context.Context, event *slack.Even
 }
 
 // handleTextCommand handles text-based commands (from mentions or DMs)
-func (s *SlackServer) handleTextCommand(text string) (string, error) {
+func (s *SlackServer) handleTextCommand(text, userID string) (string, error) {
 	text = strings.TrimSpace(text)
 
 	if text == "" || text == "help" || text == "info" {
@@ -1171,13 +1249,13 @@ func (s *SlackServer) handleTextCommand(text string) (string, error) {
 		if commandText == "" {
 			return "❌ Usage: `pr <PR_URL>`", nil
 		}
-		return s.analyzePR(commandText)
+		return s.analyzePR(commandText, userID)
 
 	case "jt", "jira":
 		if commandText == "" {
 			return "❌ Usage: `jt <JIRA_TICKET>`", nil
 		}
-		return s.analyzeJiraTicket(commandText)
+		return s.analyzeJiraTicket(commandText, userID)
 
 	case "version", "v":
 		if commandText == "" {
@@ -1188,6 +1266,10 @@ func (s *SlackServer) handleTextCommand(text string) (string, error) {
 	default:
 		return fmt.Sprintf("❌ Unknown command: %s\n\nUse `info` or `help` to see available commands.", command), nil
 	}
+}
+
+func sheetsUnavailableSlackMessage() string {
+	return fmt.Sprintf("⚠️ Release schedule data is currently unavailable (Google Sheets API error).\n📊 View the release schedule directly: <%s|Release Schedule>", ga.ReleaseScheduleURL)
 }
 
 // getSaaSVersionBadge returns the badge text for a SaaS version

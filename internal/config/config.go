@@ -52,6 +52,11 @@ func Load() (*models.Config, error) {
 		jiraToken = os.Getenv("PR_BOT_JIRA_TOKEN")
 	}
 
+	jiraEmail := viper.GetString("jira_email")
+	if jiraEmail == "" {
+		jiraEmail = os.Getenv("PR_BOT_JIRA_EMAIL")
+	}
+
 	// Handle Google Sheets configuration
 	googleSheetID := viper.GetString("google_sheet_id")
 	if googleSheetID == "" {
@@ -70,8 +75,10 @@ func Load() (*models.Config, error) {
 		BranchPrefix:             viper.GetString("github.branch_prefix"),
 		DefaultBranch:            viper.GetString("github.default_branch"),
 		SlackBotToken:            viper.GetString("slack.bot_token"),
+		SlackSigningSecret:       viper.GetString("slack.signing_secret"),
 		GitLabToken:              gitlabToken,
 		JiraToken:                jiraToken,
+		JiraEmail:                jiraEmail,
 		GoogleSheetID:            googleSheetID,
 		GoogleServiceAccountJSON: googleServiceAccountJSON,
 	}
@@ -112,6 +119,7 @@ func setDefaults() {
 	viper.SetDefault("slack.bot_token", "")
 	viper.SetDefault("gitlab_token", "")
 	viper.SetDefault("jira_token", "")
+	viper.SetDefault("jira_email", "")
 	viper.SetDefault("google_sheet_id", "")
 	viper.SetDefault("google_service_account_json", "")
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shay23bra/pr-bot/internal/logger"
+	"github.com/shay23bra/pr-bot/internal/models"
 )
 
 const (
@@ -100,7 +101,7 @@ func CheckForUpdates(ctx context.Context) {
 		return
 	}
 
-	if currentVersion != latestVersion {
+	if models.CompareSemanticVersions(latestVersion, currentVersion) > 0 {
 		fmt.Printf("\n⚠️  A newer version is available: %s (current: %s)\n", latestVersion, currentVersion)
 		fmt.Printf("📦 Update with: go install github.com/shay23bra/pr-bot@latest\n")
 		fmt.Printf("🔗 Or download from: https://github.com/shay23bra/pr-bot/releases/latest\n\n")
