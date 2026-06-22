@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -312,9 +313,8 @@ func (s *SlackServer) analyzeJiraTicket(ticketURL, userID string) (string, error
 		return "", fmt.Errorf("failed to extract JIRA ticket ID from: %s", ticketURL)
 	}
 
-	// Check if JIRA token is configured
-	if s.config.JiraToken == "" {
-		return "", fmt.Errorf("JIRA token not configured. Please set PR_BOT_JIRA_TOKEN in your .env file")
+	if s.config.JiraToken == "" || s.config.JiraEmail == "" {
+		return "", fmt.Errorf("JIRA not configured. Please set PR_BOT_JIRA_TOKEN and PR_BOT_JIRA_EMAIL in your .env file")
 	}
 
 	// Create JIRA client
@@ -631,54 +631,24 @@ func (s *SlackServer) formatPRAnalysisForSlack(result *models.PRAnalysisResult, 
 	response.WriteString(fmt.Sprintf("📝 %s\n", result.PR.Title))
 	response.WriteString(fmt.Sprintf("🔨 Merged to `%s` at %s\n\n", result.PR.MergedInto, models.FormatDate(result.PR.MergedAt)))
 
-	if len(result.ReleaseBranches) == 0 {
-		response.WriteString("❌ No release branches found containing this PR\n")
-		return response.String()
-	}
-
-	// Group branches by pattern
-	branchGroups := make(map[string][]models.BranchPresence)
+	allBranchesMap := make(map[string]models.BranchPresence)
 	for _, branch := range result.ReleaseBranches {
 		if branch.Found {
-			branchGroups[branch.Pattern] = append(branchGroups[branch.Pattern], branch)
+			allBranchesMap[branch.BranchName] = branch
 		}
 	}
 
-	response.WriteString("✅ *Found in release branches:*\n")
-	for pattern, branches := range branchGroups {
-		response.WriteString(fmt.Sprintf("📂 *%s branches:*\n", models.PatternDisplayName(pattern)))
-		for _, branch := range branches {
-			response.WriteString(fmt.Sprintf("  • `%s` (v%s)", branch.BranchName, branch.Version))
-			if branch.MergedAt != nil {
-				response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
-			}
-
-			// Add GA release information for ACM/MCE branches
-			if pattern == "release-ocm-" {
-				s.addGAInfoToSlackResponse(&response, branch)
-			}
-
-			// Add version tag information for version-prefixed branches
-			if len(branch.ReleasedVersions) > 0 {
-				releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
-				// Add badge for SaaS versions
-				if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
-					// Get badge for the first released version (or all if multiple)
-					badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
-					releasedVersionsText += badge
-				}
-				response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", releasedVersionsText))
-			}
-
-			response.WriteString("\n")
-		}
-		response.WriteString("\n")
+	if len(allBranchesMap) == 0 {
+		response.WriteString("❌ No release branches found containing this PR\n")
+	} else {
+		s.writeSlackBranchList(&response, allBranchesMap)
 	}
 
 	return response.String()
 }
 
-// formatEnhancedPRAnalysisForSlack formats PR analysis results with related PRs for Slack
+// formatEnhancedPRAnalysisForSlack formats PR analysis results with related PRs for Slack,
+// combining all branches from the main PR and backports into one unified view (matching CLI output).
 func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysisResult, unmergedPRs []models.UnmergedPR, userID string) string {
 	var response strings.Builder
 
@@ -701,164 +671,52 @@ func (s *SlackServer) formatEnhancedPRAnalysisForSlack(result *models.PRAnalysis
 			response.WriteString(fmt.Sprintf("🔗 Related tickets: %s\n", strings.Join(result.JiraAnalysis.AllTickets[1:], ", ")))
 		}
 
-		totalRelatedPRs := len(result.RelatedPRs) + len(unmergedPRs)
-		if totalRelatedPRs > 0 {
-			response.WriteString(fmt.Sprintf("📊 Found %d related PRs", totalRelatedPRs))
-			if len(result.RelatedPRs) > 0 && len(unmergedPRs) > 0 {
-				response.WriteString(fmt.Sprintf(" (%d merged, %d in review)", len(result.RelatedPRs), len(unmergedPRs)))
-			} else if len(unmergedPRs) > 0 {
-				response.WriteString(fmt.Sprintf(" (%d in review)", len(unmergedPRs)))
+		backportCount := 0
+		for _, rp := range result.RelatedPRs {
+			if rp.Number != result.PR.Number {
+				backportCount++
 			}
-			response.WriteString("\n\n")
+		}
+		if backportCount > 0 {
+			response.WriteString(fmt.Sprintf("📊 Found %d related backport PRs:\n", backportCount))
+			for _, rp := range result.RelatedPRs {
+				if rp.Number != result.PR.Number {
+					response.WriteString(fmt.Sprintf("  • PR #%d: %s\n", rp.Number, rp.Title))
+				}
+			}
+		}
+		if len(unmergedPRs) > 0 {
+			response.WriteString(fmt.Sprintf("🔄 %d PRs in review:\n", len(unmergedPRs)))
+			for _, up := range unmergedPRs {
+				response.WriteString(fmt.Sprintf("  • PR #%d: %s\n", up.Number, up.Title))
+			}
+		}
+		response.WriteString("\n")
+	}
+
+	// Combine all branches from main PR and related PRs (same as CLI)
+	allBranchesMap := make(map[string]models.BranchPresence)
+	for _, branch := range result.ReleaseBranches {
+		if branch.Found {
+			allBranchesMap[branch.BranchName] = branch
+		}
+	}
+	for _, relatedPR := range result.RelatedPRs {
+		if relatedPR.Number != result.PR.Number {
+			for _, branch := range relatedPR.ReleaseBranches {
+				if branch.Found {
+					if _, exists := allBranchesMap[branch.BranchName]; !exists {
+						allBranchesMap[branch.BranchName] = branch
+					}
+				}
+			}
 		}
 	}
 
-	// Main PR release branch analysis
-	if len(result.ReleaseBranches) == 0 {
-		response.WriteString("❌ No release branches found containing this PR\n")
+	if len(allBranchesMap) == 0 {
+		response.WriteString("❌ No release branches found\n")
 	} else {
-		// Group branches by pattern
-		branchGroups := make(map[string][]models.BranchPresence)
-		for _, branch := range result.ReleaseBranches {
-			if branch.Found {
-				branchGroups[branch.Pattern] = append(branchGroups[branch.Pattern], branch)
-			}
-		}
-
-		response.WriteString("✅ *Found in release branches:*\n")
-		for pattern, branches := range branchGroups {
-			response.WriteString(fmt.Sprintf("📂 *%s branches:*\n", models.PatternDisplayName(pattern)))
-			for _, branch := range branches {
-				response.WriteString(fmt.Sprintf("  • `%s` (v%s)", branch.BranchName, branch.Version))
-				if branch.MergedAt != nil {
-					response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
-				}
-
-				// Add GA release information for ACM/MCE branches
-				if pattern == "release-ocm-" {
-					s.addGAInfoToSlackResponse(&response, branch)
-				}
-
-				// Add version tag information for version-prefixed branches
-				if len(branch.ReleasedVersions) > 0 {
-					releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
-					// Add badge for SaaS versions
-					if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
-						// Get badge for the first released version (or all if multiple)
-						badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
-						releasedVersionsText += badge
-					}
-					response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", releasedVersionsText))
-				}
-
-				response.WriteString("\n")
-			}
-			response.WriteString("\n")
-		}
-	}
-
-	// Show related PRs if any exist
-	if len(result.RelatedPRs) > 0 || len(unmergedPRs) > 0 {
-		response.WriteString("🔗 *Related PRs:*\n")
-
-		// Show merged related PRs
-		for i, relatedPR := range result.RelatedPRs {
-			// Skip the main PR if it appears in related PRs
-			if relatedPR.Number == result.PR.Number {
-				continue
-			}
-
-			response.WriteString(fmt.Sprintf("*%d. PR #%d*\n", i+1, relatedPR.Number))
-			response.WriteString(fmt.Sprintf("🔗 %s\n", relatedPR.URL))
-			response.WriteString(fmt.Sprintf("📝 %s\n", relatedPR.Title))
-
-			// Check if PR is in any release branches
-			foundBranches := []models.BranchPresence{}
-			for _, branch := range relatedPR.ReleaseBranches {
-				if branch.Found {
-					foundBranches = append(foundBranches, branch)
-				}
-			}
-
-			if len(foundBranches) == 0 {
-				response.WriteString("❌ Not found in any release branches\n")
-			} else {
-				response.WriteString("✅ *Found in release branches:*\n")
-
-				// Group branches by pattern
-				branchGroups := make(map[string][]models.BranchPresence)
-				for _, branch := range foundBranches {
-					branchGroups[branch.Pattern] = append(branchGroups[branch.Pattern], branch)
-				}
-
-				for pattern, branches := range branchGroups {
-					response.WriteString(fmt.Sprintf("  📂 *%s branches:*\n", models.PatternDisplayName(pattern)))
-					for _, branch := range branches {
-						response.WriteString(fmt.Sprintf("    • `%s` (v%s)", branch.BranchName, branch.Version))
-						if branch.MergedAt != nil {
-							response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
-						}
-
-						// Add GA release information for ACM/MCE branches
-						if pattern == "release-ocm-" {
-							s.addGAInfoToSlackResponse(&response, branch)
-						}
-
-						// Add version tag information for version-prefixed branches
-						if len(branch.ReleasedVersions) > 0 {
-							releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
-							// Add badge for SaaS versions
-							if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
-								// Get badge for the first released version (or all if multiple)
-								badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
-								releasedVersionsText += badge
-							}
-							response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", releasedVersionsText))
-						}
-
-						response.WriteString("\n")
-					}
-				}
-			}
-			response.WriteString("\n")
-		}
-
-		// Add unmerged PRs section if any exist
-		if len(unmergedPRs) > 0 {
-			response.WriteString("🔄 *PRs In Review:*\n")
-			for i, unmergedPR := range unmergedPRs {
-				prIndex := len(result.RelatedPRs) + i + 1
-				// Display status only if it's not a standard "In Review" status
-				statusDisplay := ""
-				if unmergedPR.Status != "In Review" {
-					statusDisplay = fmt.Sprintf(" *%s*", unmergedPR.Status)
-				}
-				response.WriteString(fmt.Sprintf("*%d. PR #%d*%s\n", prIndex, unmergedPR.Number, statusDisplay))
-				response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
-				response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
-				response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
-			}
-		}
-
-		// Summary for related PRs
-		totalBranches := 0
-		for _, relatedPR := range result.RelatedPRs {
-			for _, branch := range relatedPR.ReleaseBranches {
-				if branch.Found {
-					totalBranches++
-				}
-			}
-		}
-
-		totalRelatedPRs := len(result.RelatedPRs) + len(unmergedPRs)
-		summaryText := fmt.Sprintf("📋 *Summary:* 1 main PR + %d related PRs", totalRelatedPRs)
-		if len(result.RelatedPRs) > 0 {
-			summaryText += fmt.Sprintf(" (%d analyzed, %d release branch entries)", len(result.RelatedPRs), totalBranches)
-		}
-		if len(unmergedPRs) > 0 {
-			summaryText += fmt.Sprintf(" (%d in review)", len(unmergedPRs))
-		}
-		response.WriteString(summaryText + "\n")
+		s.writeSlackBranchList(&response, allBranchesMap)
 	}
 
 	return response.String()
@@ -915,7 +773,7 @@ func (s *SlackServer) addGAInfoToSlackResponse(response *strings.Builder, branch
 	}
 }
 
-// formatJiraAnalysisForSlack formats JIRA analysis results for Slack
+// formatJiraAnalysisForSlack formats JIRA analysis results for Slack with combined branch view.
 func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalysis, relatedPRs []models.RelatedPR, unmergedPRs []models.UnmergedPR, userID string) string {
 	var response strings.Builder
 
@@ -932,112 +790,39 @@ func (s *SlackServer) formatJiraAnalysisForSlack(jiraAnalysis *models.JiraAnalys
 	}
 
 	totalPRs := len(relatedPRs) + len(unmergedPRs)
-	response.WriteString(fmt.Sprintf("📊 Found %d related PRs", totalPRs))
-	if len(relatedPRs) > 0 && len(unmergedPRs) > 0 {
-		response.WriteString(fmt.Sprintf(" (%d merged, %d in review)", len(relatedPRs), len(unmergedPRs)))
-	} else if len(unmergedPRs) > 0 {
-		response.WriteString(fmt.Sprintf(" (%d in review)", len(unmergedPRs)))
-	}
-	response.WriteString("\n\n")
-
 	if totalPRs == 0 {
-		response.WriteString("❌ No related PRs found in supported repositories\n")
+		response.WriteString("\n❌ No related PRs found in supported repositories\n")
 		response.WriteString("💡 Supported repos: assisted-service, assisted-installer, assisted-installer-agent, assisted-installer-ui\n")
 		return response.String()
 	}
 
-	response.WriteString("🔗 *Related PRs:*\n")
-	for i, relatedPR := range relatedPRs {
-		response.WriteString(fmt.Sprintf("*%d. PR #%d*\n", i+1, relatedPR.Number))
-		response.WriteString(fmt.Sprintf("🔗 %s\n", relatedPR.URL))
-		response.WriteString(fmt.Sprintf("📝 %s\n", relatedPR.Title))
+	// List all PRs
+	response.WriteString(fmt.Sprintf("📊 Found %d related PRs:\n", totalPRs))
+	for _, rp := range relatedPRs {
+		response.WriteString(fmt.Sprintf("  • PR #%d: %s\n", rp.Number, rp.Title))
+	}
+	for _, up := range unmergedPRs {
+		response.WriteString(fmt.Sprintf("  • PR #%d: %s _(in review)_\n", up.Number, up.Title))
+	}
+	response.WriteString("\n")
 
-		// Check if PR is in any release branches
-		foundBranches := []models.BranchPresence{}
-		for _, branch := range relatedPR.ReleaseBranches {
+	// Combine all branches from all PRs into one unified view
+	allBranchesMap := make(map[string]models.BranchPresence)
+	for _, rp := range relatedPRs {
+		for _, branch := range rp.ReleaseBranches {
 			if branch.Found {
-				foundBranches = append(foundBranches, branch)
-			}
-		}
-
-		if len(foundBranches) == 0 {
-			response.WriteString("❌ Not found in any release branches\n")
-		} else {
-			response.WriteString("✅ *Found in release branches:*\n")
-
-			// Group branches by pattern
-			branchGroups := make(map[string][]models.BranchPresence)
-			for _, branch := range foundBranches {
-				branchGroups[branch.Pattern] = append(branchGroups[branch.Pattern], branch)
-			}
-
-			for pattern, branches := range branchGroups {
-				response.WriteString(fmt.Sprintf("  📂 *%s branches:*\n", models.PatternDisplayName(pattern)))
-				for _, branch := range branches {
-					response.WriteString(fmt.Sprintf("    • `%s` (v%s)", branch.BranchName, branch.Version))
-					if branch.MergedAt != nil {
-						response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
-					}
-
-					// Add GA release information for ACM/MCE branches
-					if pattern == "release-ocm-" {
-						s.addGAInfoToSlackResponse(&response, branch)
-					}
-
-					// Add version tag information for version-prefixed branches
-					if len(branch.ReleasedVersions) > 0 {
-						releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
-						// Add badge for SaaS versions
-						if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
-							// Get badge for the first released version (or all if multiple)
-							badge := s.getSaaSVersionBadge(branch.ReleasedVersions[0])
-							releasedVersionsText += badge
-						}
-						response.WriteString(fmt.Sprintf("\n      📦 Released in: %s", releasedVersionsText))
-					}
-
-					response.WriteString("\n")
+				if existing, exists := allBranchesMap[branch.BranchName]; !exists || len(branch.UpcomingGAs) > len(existing.UpcomingGAs) {
+					allBranchesMap[branch.BranchName] = branch
 				}
 			}
 		}
-		response.WriteString("\n")
 	}
 
-	// Add unmerged PRs section if any exist
-	if len(unmergedPRs) > 0 {
-		response.WriteString("🔄 *PRs In Review:*\n")
-		for i, unmergedPR := range unmergedPRs {
-			prIndex := len(relatedPRs) + i + 1
-			// Display status only if it's not a standard "In Review" status
-			statusDisplay := ""
-			if unmergedPR.Status != "In Review" {
-				statusDisplay = fmt.Sprintf(" *%s*", unmergedPR.Status)
-			}
-			response.WriteString(fmt.Sprintf("*%d. PR #%d*%s\n", prIndex, unmergedPR.Number, statusDisplay))
-			response.WriteString(fmt.Sprintf("🔗 %s\n", unmergedPR.URL))
-			response.WriteString(fmt.Sprintf("📝 %s\n", unmergedPR.Title))
-			response.WriteString("⏳ Cannot analyze release branches until merged\n\n")
-		}
+	if len(allBranchesMap) == 0 {
+		response.WriteString("❌ No release branches found across all analyzed PRs\n")
+	} else {
+		s.writeSlackBranchList(&response, allBranchesMap)
 	}
-
-	// Summary
-	totalBranches := 0
-	for _, relatedPR := range relatedPRs {
-		for _, branch := range relatedPR.ReleaseBranches {
-			if branch.Found {
-				totalBranches++
-			}
-		}
-	}
-
-	summaryText := fmt.Sprintf("📋 *Summary:* %d total PRs", totalPRs)
-	if len(relatedPRs) > 0 {
-		summaryText += fmt.Sprintf(" (%d analyzed, %d release branch entries)", len(relatedPRs), totalBranches)
-	}
-	if len(unmergedPRs) > 0 {
-		summaryText += fmt.Sprintf(" (%d in review)", len(unmergedPRs))
-	}
-	response.WriteString(summaryText + "\n")
 
 	return response.String()
 }
@@ -1265,6 +1050,52 @@ func (s *SlackServer) handleTextCommand(text, userID string) (string, error) {
 
 	default:
 		return fmt.Sprintf("❌ Unknown command: %s\n\nUse `info` or `help` to see available commands.", command), nil
+	}
+}
+
+// writeSlackBranchList writes a combined branch list to the response, grouped by pattern and sorted.
+func (s *SlackServer) writeSlackBranchList(response *strings.Builder, allBranchesMap map[string]models.BranchPresence) {
+	// Group by pattern
+	branchGroups := make(map[string][]models.BranchPresence)
+	for _, branch := range allBranchesMap {
+		branchGroups[branch.Pattern] = append(branchGroups[branch.Pattern], branch)
+	}
+
+	// Sort within each group
+	patternOrder := []string{"release-ocm-", "releases/v", "release-", "release-v", "v"}
+	for _, branches := range branchGroups {
+		sort.Slice(branches, func(i, j int) bool {
+			return models.ParseVersionNumber(branches[i].Version) < models.ParseVersionNumber(branches[j].Version)
+		})
+	}
+
+	totalBranches := len(allBranchesMap)
+	response.WriteString(fmt.Sprintf("✅ *Found in %d release branches:*\n", totalBranches))
+
+	for _, pattern := range patternOrder {
+		branches := branchGroups[pattern]
+		if len(branches) == 0 {
+			continue
+		}
+		response.WriteString(fmt.Sprintf("📂 *%s branches (%d):*\n", models.PatternDisplayName(pattern), len(branches)))
+		for _, branch := range branches {
+			response.WriteString(fmt.Sprintf("  • `%s` (v%s)", branch.BranchName, branch.Version))
+			if branch.MergedAt != nil {
+				response.WriteString(fmt.Sprintf(" - merged %s", models.FormatDate(branch.MergedAt)))
+			}
+			if pattern == "release-ocm-" {
+				s.addGAInfoToSlackResponse(response, branch)
+			}
+			if len(branch.ReleasedVersions) > 0 {
+				releasedVersionsText := strings.Join(branch.ReleasedVersions, ", ")
+				if pattern == "v" && s.analyzer != nil && s.analyzer.GetGitLabClient() != nil {
+					releasedVersionsText += s.getSaaSVersionBadge(branch.ReleasedVersions[0])
+				}
+				response.WriteString(fmt.Sprintf("\n    📦 Released in: %s", releasedVersionsText))
+			}
+			response.WriteString("\n")
+		}
+		response.WriteString("\n")
 	}
 }
 
